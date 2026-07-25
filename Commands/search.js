@@ -98,6 +98,7 @@ async function googleSearch(q, totalWanted = 5, pageOffset = 0) {
                 hl: "en",
                 gl: "us",
                 gbv: "1",
+                udm: "14", // Disable AI Overviews and force standard web results
                 start: pageOffset
             },
             headers: {
@@ -206,7 +207,7 @@ async function googleSearch(q, totalWanted = 5, pageOffset = 0) {
         try {
             const response = await axios.get("https://search.yahoo.com/search", {
                 params: {
-                    q: q,
+                    p: q,
                     b: pageOffset + 1
                 },
                 headers: {
