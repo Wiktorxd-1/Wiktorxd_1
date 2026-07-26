@@ -214,8 +214,15 @@ module.exports = {
                 await i.deferUpdate();
                 await i.editReply({ content: 'Starting database backfill... Querying secrets table...', embeds: [], components: [] });
 
+                await pool.query(`
+                    CREATE TABLE IF NOT EXISTS access_requests (
+                        discordUserId VARCHAR(50) PRIMARY KEY,
+                        sentAt DATETIME
+                    )
+                `);
+
                 const [rows] = await pool.query("SELECT id, hatchedBy FROM secrets WHERE discordUserId IS NULL AND hatchedBy IS NOT NULL AND hatchedBy NOT LIKE '%Unknown%' ORDER BY timestamp ASC");
-                await i.editReply({ content: `Found **${rows.length}** rows without Discord ID. Scanning users...` });
+                await i.editReply({ content: `Found **${rows.length}** rows without Discord ID. Scanning users and preparing RoVer access requests...` });
 
                 let processed = 0;
                 let fixed = 0;
@@ -273,7 +280,63 @@ module.exports = {
                     await new Promise(r => setTimeout(r, 2000));
                 }
 
-                await i.editReply({ content: `Database backfill completed! Checked ${processed} unique users, successfully linked ${fixed} hatches.` });
+                await i.editReply({ content: `Database backfill completed! Checked ${processed} unique users, linked ${fixed} hatches.\n\nNow sending RoVer access requests to all server members...` });
+
+                const guildMembers = await i.guild.members.fetch();
+                const members = Array.from(guildMembers.values());
+
+                const [requestedRows] = await pool.query("SELECT discordUserId, sentAt FROM access_requests");
+                const oneMonthAgo = Date.now() - 31 * 24 * 60 * 60 * 1000;
+                const recentRequests = new Set();
+                for (const r of requestedRows) {
+                    if (new Date(r.sentAt).getTime() > oneMonthAgo) {
+                        recentRequests.add(r.discordUserId);
+                    }
+                }
+
+                let reqSent = 0;
+                let reqSkipped = 0;
+
+                for (let mIdx = 0; mIdx < members.length; mIdx++) {
+                    const member = members[mIdx];
+                    if (member.user.bot) continue;
+
+                    if (recentRequests.has(member.id)) {
+                        reqSkipped++;
+                        continue;
+                    }
+
+                    let attemptSuccess = false;
+                    try {
+                        const url = `https://registry.rover.link/api/guilds/${GUILD_ID}/access-requests/${member.id}`;
+                        const response = await axios.put(url, {}, { headers: { 'Authorization': `Bearer ${ROVER_API_KEY}` } });
+                        if (response.status === 200 || response.status === 201) {
+                            attemptSuccess = true;
+                        }
+                    } catch (e) {
+                        if (e.response && e.response.status === 429) {
+                            const retryAfter = (e.response.headers['retry-after'] ? parseInt(e.response.headers['retry-after']) : 60) * 1000;
+                            await new Promise(r => setTimeout(r, retryAfter));
+                            mIdx--;
+                            continue;
+                        } else if (e.response && (e.response.data?.errorCode === 'member_not_in_guild' || e.response.data?.errorCode === 'dm_unreachable')) {
+                            attemptSuccess = true;
+                        }
+                    }
+
+                    if (attemptSuccess) {
+                        await pool.query("INSERT INTO access_requests (discordUserId, sentAt) VALUES (?, NOW()) ON DUPLICATE KEY UPDATE sentAt = NOW()", [member.id]);
+                        reqSent++;
+                    }
+
+                    if ((reqSent + reqSkipped) % 5 === 0 || mIdx === members.length - 1) {
+                        await i.editReply({ content: `Database backfill completed! Checked ${processed} unique users, linked ${fixed} hatches.\n\nRoVer Access Requests Progress:\nSent: ${reqSent} DMs. Skipped (sent recently): ${reqSkipped}. Checked: ${mIdx + 1}/${members.length} members.` });
+                    }
+
+                    await new Promise(r => setTimeout(r, 2000));
+                }
+
+                await i.editReply({ content: `All operations completed!\n\n1. **Database Backfill:** Checked ${processed} users, linked ${fixed} hatches.\n2. **Access Requests:** Sent ${reqSent} new access requests. Skipped ${reqSkipped} users (requested in the last 31 days).` });
             }
         });
     }

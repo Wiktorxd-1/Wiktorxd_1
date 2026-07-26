@@ -62,42 +62,6 @@ module.exports = {
             searchRobloxUsername = earlierSecretEntry.username.toLowerCase();
         }
 
-        const loadMatchingHatches = () => {
-            const tempMatchingHatches = [];
-            const cache = require('../Utility/Hatches/secrets').getCache() || [];
-
-            for (const data of cache) {
-                const hatchedByRaw = data.hatchedBy || '';
-                const hatchedByLower = hatchedByRaw.toLowerCase();
-                const matchesDiscord = searchDiscordId && data.discordUserId === searchDiscordId;
-                let matchesRoblox = false;
-                if (searchRobloxUsername) {
-                    let extractedRobloxUsername = '';
-                    const atUsernameMatch = hatchedByLower.match(/\(@([a-z0-9_]+)\)/);
-                    if (atUsernameMatch && atUsernameMatch[1]) {
-                        extractedRobloxUsername = atUsernameMatch[1];
-                    } else {
-                        const firstWordMatch = hatchedByLower.match(/^([a-z0-9_]+)/);
-                        if (firstWordMatch && firstWordMatch[1]) {
-                            extractedRobloxUsername = firstWordMatch[1];
-                        }
-                    }
-                    if (extractedRobloxUsername.includes(searchRobloxUsername)) {
-                        matchesRoblox = true;
-                    }
-                } else if (searchDiscordId) {
-                    if (data.discordUserId === searchDiscordId) {
-                        matchesRoblox = true;
-                    }
-                }
-                if (matchesDiscord || matchesRoblox) {
-                    tempMatchingHatches.push(data);
-                }
-            }
-            return tempMatchingHatches;
-        };
-        
-        await require('../Utility/Hatches/secrets').ensureCacheIsFresh();
         await interaction.editReply({
             embeds: [
                 new EmbedBuilder()
@@ -106,56 +70,9 @@ module.exports = {
                     .setColor(0xFBE7BD)
             ]
         });
-        
-        await interaction.editReply({
-            embeds: [
-                new EmbedBuilder()
-                    .setTitle('Loading')
-                    .setDescription('Loading data... (full scan)')
-                    .setColor(0xFBE7BD)
-            ]
-        });
 
-        const streamMatches = async () => {
-            const results = [];
-            const iter = require('../Utility/Hatches/secrets').iterateAllEntries();
-            for await (const data of iter) {
-                try {
-                    const hatchedByRaw = data.hatchedBy || '';
-                    const hatchedByLower = hatchedByRaw.toLowerCase();
-                    const matchesDiscord = searchDiscordId && data.discordUserId === searchDiscordId;
-                    let matchesRoblox = false;
-                    if (searchRobloxUsername) {
-                            let extractedRobloxUsername = '';
-                            const atUsernameMatch = hatchedByLower.match(/\(@([a-z0-9_]+)\)/);
-                            if (atUsernameMatch && atUsernameMatch[1]) {
-                                extractedRobloxUsername = atUsernameMatch[1];
-                            } else {
-                                const firstWordMatch = hatchedByLower.match(/^([a-z0-9_]+)/);
-                                if (firstWordMatch && firstWordMatch[1]) {
-                                    extractedRobloxUsername = firstWordMatch[1];
-                                }
-                            }
-                            if (extractedRobloxUsername.includes(searchRobloxUsername)) {
-                                matchesRoblox = true;
-                            }
-                        } else if (searchDiscordId) {
-                            if (data.discordUserId === searchDiscordId) {
-                                matchesRoblox = true;
-                            }
-                        }
-                        if (matchesDiscord || matchesRoblox) {
-                            results.push(data);
-                        }
-                    } catch (error) {
-                        continue;
-                    }
-                }
-                return results;
-            };
-
-            matchingHatches = await streamMatches();
-            matchingHatches.reverse();
+        const matchingHatchesRaw = await require('../Utility/Hatches/secrets').searchSecretsDB(searchDiscordId, searchRobloxUsername);
+        let matchingHatches = matchingHatchesRaw.reverse();
 
         if (matchingHatches.length === 0) {
             if (cachedTotal && cachedTotal > 0) {
