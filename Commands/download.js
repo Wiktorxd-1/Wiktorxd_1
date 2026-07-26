@@ -14,7 +14,33 @@ const path = require('path');
 const sharp = require('sharp');
 const { execSync } = require('child_process');
 
-const COBALT_API = 'https://cobalt-api.wiktorxd-1.dev/';
+const COBALT_INSTANCES = [
+    'https://cobalt-api.wiktorxd-1.dev/',
+    'https://api-cobalt.eversiege.network/',
+    'https://api.cobalt.liubquanti.click/',
+    'https://cobalt.omega.wolfy.love/',
+    'https://subito-c.meowing.de/'
+];
+
+async function requestCobalt(payload) {
+    let lastError = null;
+    for (let api of COBALT_INSTANCES) {
+        try {
+            const res = await axios.post(api, payload, {
+                headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+                timeout: 20000
+            });
+            if (res.data && res.data.status === 'error') {
+                throw new Error(res.data.error?.code || 'unknown_error');
+            }
+            return { data: res.data, apiUsed: api };
+        } catch (e) {
+            const errMsg = e.response?.data?.error?.code || e.message;
+            lastError = new Error(`Instance ${api} failed: ${errMsg}`);
+        }
+    }
+    throw lastError || new Error('All Cobalt instances failed');
+}
 const UA_BROWSER = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const VIDEO_EXTS = new Set(['mp4', 'm4v', 'mov', 'webm']);
 
@@ -1348,8 +1374,7 @@ module.exports = {
             if (estimateFileSize(metadata.durationSeconds, state, url) > 800 * 1024 * 1024) {
                 await i.update({ content: 'Generating direct download link <a:loading:1524146146937667784>', embeds: [], components: [] });
                 try {
-                    const cobaltRes = await axios.post(COBALT_API, payload, { headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' }, timeout: 30000 });
-                    const d = cobaltRes.data;
+                    const { data: d } = await requestCobalt(payload);
                     if (d?.status === 'redirect' || d?.status === 'tunnel') {
                         await interaction.editReply({
                             content: '❌ **File is too big (> 800 MB) to upload to Discord**\nPlease download it directly here:',
@@ -1373,8 +1398,7 @@ module.exports = {
                 attempt++;
                 try {
                     console.error(`Cobalt download attempt ${attempt}/${maxAttempts}`);
-                    const cobaltRes = await axios.post(COBALT_API, payload, { headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' }, timeout: 30000 });
-                    const d = cobaltRes.data;
+                    const { data: d } = await requestCobalt(payload);
 
                     if (d?.status === 'picker') {
                         if (isAudio && !d.audio) throw new Error('No audio track available for this slideshow.');
@@ -1495,12 +1519,12 @@ module.exports = {
                     if (axios.isCancel(e) && e.message === 'FILE_TOO_LARGE') {
                         await interaction.editReply({ content: 'Generating fresh download link... <a:loading:1524146146937667784>', embeds: [], components: [] });
                         try {
-                            const r2 = await axios.post(COBALT_API, payload, { headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' }, timeout: 30000 });
-                            if (r2.data?.status === 'redirect' || r2.data?.status === 'tunnel') {
+                            const { data: r2 } = await requestCobalt(payload);
+                            if (r2?.status === 'redirect' || r2?.status === 'tunnel') {
                                 await interaction.editReply({
                                     content: '❌ **File is too large (> 300 MB) to upload directly.**\nPlease download it directly here:',
                                     embeds: [],
-                                    components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setLabel('Download File').setStyle(ButtonStyle.Link).setURL(r2.data.url))]
+                                    components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setLabel('Download File').setStyle(ButtonStyle.Link).setURL(r2.url))]
                                 });
                             } else throw new Error('Failed to get fresh link');
                         } catch (err) {
