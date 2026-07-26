@@ -1282,7 +1282,11 @@ module.exports = {
             option.setName('url').setDescription('Link to video to download').setRequired(true)),
 
     async execute(interaction) {
-        await interaction.reply({ content: 'Processing... <a:loading:1524146146937667784>', flags: 0 });
+        await interaction.reply({ 
+            content: 'Processing... <a:loading:1524146146937667784>', 
+            files: [new AttachmentBuilder('https://upload.wikimedia.org/wikipedia/commons/c/ca/1x1.png', { name: '1x1.png' })],
+            flags: 0 
+        });
 
         let url = interaction.options.getString('url');
         url = normalizeUrl(url);
@@ -1300,7 +1304,12 @@ module.exports = {
             view: 'basic'
         };
 
-        const replyMsg = await interaction.editReply({ content: null, embeds: [buildEmbed(metadata, state)], components: getComponents(state, metadata.maxQuality, metadata.duration) });
+        const replyMsg = await interaction.editReply({ 
+            content: null, 
+            embeds: [buildEmbed(metadata, state)], 
+            components: getComponents(state, metadata.maxQuality, metadata.duration),
+            files: [new AttachmentBuilder('https://upload.wikimedia.org/wikipedia/commons/c/ca/1x1.png', { name: '1x1.png' })]
+        });
         const collector = replyMsg.createMessageComponentCollector({ time: 300_000 });
 
         collector.on('collect', async i => {
@@ -1322,7 +1331,11 @@ module.exports = {
 
             if (stateMap[i.customId]) {
                 stateMap[i.customId]();
-                await i.update({ embeds: [buildEmbed(metadata, state)], components: getComponents(state, metadata.maxQuality, metadata.duration) });
+                await i.update({ 
+                    embeds: [buildEmbed(metadata, state)], 
+                    components: getComponents(state, metadata.maxQuality, metadata.duration),
+                    files: [new AttachmentBuilder('https://upload.wikimedia.org/wikipedia/commons/c/ca/1x1.png', { name: '1x1.png' })]
+                });
                 return;
             }
 
@@ -1357,7 +1370,7 @@ module.exports = {
                     }).catch(() => null);
                     tryUnlink(mp3Path);
                 } catch (e) {
-                    await interaction.editReply({ content: `❌ Spotify download failed: \`${e.message}\``, components: [] });
+                    await interaction.editReply({ content: `❌ Spotify download failed: \`${e.message}\``, components: [], files: [] });
                 }
                 return;
             }
@@ -1379,11 +1392,12 @@ module.exports = {
                         await interaction.editReply({
                             content: '❌ **File is too big (> 800 MB) to upload to Discord**\nPlease download it directly here:',
                             embeds: [],
-                            components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setLabel('Download File').setStyle(ButtonStyle.Link).setURL(d.url))]
+                            components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setLabel('Download File').setStyle(ButtonStyle.Link).setURL(d.url))],
+                            files: []
                         });
                     } else throw new Error('Failed to obtain fresh link from Cobalt');
                 } catch (e) {
-                    await interaction.editReply({ content: `❌ File is too big, and failed to generate a download link: \`${e.message}\``, embeds: [], components: [] });
+                    await interaction.editReply({ content: `❌ File is too big, and failed to generate a download link: \`${e.message}\``, embeds: [], components: [], files: [] });
                 }
                 return;
             }
@@ -1484,7 +1498,8 @@ module.exports = {
                             await interaction.editReply({
                                 content: `❌ **File is too large (${totalSizeMB} MB) to upload directly (> 300 MB).**\nPlease download it directly here:`,
                                 embeds: [],
-                                components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setLabel('Download File').setStyle(ButtonStyle.Link).setURL(d.url))]
+                                components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setLabel('Download File').setStyle(ButtonStyle.Link).setURL(d.url))],
+                                files: []
                             });
                             if (fs.existsSync(tempFilePath)) tryUnlink(tempFilePath);
                             return;
@@ -1524,18 +1539,19 @@ module.exports = {
                                 await interaction.editReply({
                                     content: '❌ **File is too large (> 300 MB) to upload directly.**\nPlease download it directly here:',
                                     embeds: [],
-                                    components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setLabel('Download File').setStyle(ButtonStyle.Link).setURL(r2.url))]
+                                    components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setLabel('Download File').setStyle(ButtonStyle.Link).setURL(r2.url))],
+                                    files: []
                                 });
                             } else throw new Error('Failed to get fresh link');
                         } catch (err) {
-                            await interaction.editReply({ content: `❌ File is too large, and failed to generate a download link: \`${err.message}\``, embeds: [], components: [] });
+                            await interaction.editReply({ content: `❌ File is too large, and failed to generate a download link: \`${err.message}\``, embeds: [], components: [], files: [] });
                         }
                         return;
                     }
 
                     if (attempt >= maxAttempts) {
                         const errMsg = e.response?.data?.error?.code || e.message;
-                        await interaction.editReply({ content: `❌ Failed to download after ${maxAttempts} attempts: \`${errMsg}\``, embeds: [], components: [] });
+                        await interaction.editReply({ content: `❌ Failed to download after ${maxAttempts} attempts: \`${errMsg}\``, embeds: [], components: [], files: [] });
                         return;
                     }
                     
