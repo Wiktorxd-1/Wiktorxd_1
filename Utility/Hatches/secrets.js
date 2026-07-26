@@ -663,7 +663,8 @@ async function sendHatchEmbed(hatchData, client) {
         .setColor(0xFBE7BD)
         .setTimestamp();
 
-    let footerText = 'To not get pinged, run /turnoffping in bot commands';
+    let footerText = '';
+    const hasPing = toMainChannelPing.length > 0;
 
     if (hatcheePref?.type === 1) {
         let hatcheeDisplay = hatchData.hatchedBy || 'Unknown';
@@ -676,10 +677,20 @@ async function sendHatchEmbed(hatchData, client) {
                 console.error(`[Footer] Could not fetch user ${finalHatcheeId} for footer display name:`, e);
             }
         }
-        footerText = `Hatched by ${hatcheeDisplay} | ${footerText}`;
+        footerText = `Hatched by ${hatcheeDisplay}`;
     }
 
-    embed.setFooter({ text: footerText });
+    if (hasPing) {
+        if (footerText) {
+            footerText = `${footerText} | To not get pinged, run /turnoffping in bot commands`;
+        } else {
+            footerText = 'To not get pinged, run /turnoffping in bot commands';
+        }
+    }
+
+    if (footerText) {
+        embed.setFooter({ text: footerText });
+    }
 
     for (const [userId, messageType] of toDm.entries()) {
         try {
