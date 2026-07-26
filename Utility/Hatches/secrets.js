@@ -103,7 +103,17 @@ async function flushAllBackupsToDatabase() {
                 const hatchedBy = secret.hatchedBy || 'Unknown';
                 const discordUserId = secret.discordUserId !== undefined ? String(secret.discordUserId) : null;
 
-                await pool.query(insertQuery, [id, name, timestamp, imageUrl, totalHatched, rarity, hatchedBy, discordUserId]);
+                let finalImageUrl = imageUrl;
+                if (finalImageUrl) {
+                    try {
+                        const [existingImgs] = await pool.query('SELECT imageUrl FROM secrets WHERE name = ? AND imageUrl IS NOT NULL LIMIT 1', [name]);
+                        if (existingImgs.length > 0) {
+                            finalImageUrl = null;
+                        }
+                    } catch (e) {}
+                }
+
+                await pool.query(insertQuery, [id, name, timestamp, finalImageUrl, totalHatched, rarity, hatchedBy, discordUserId]);
             }
 
             // Only clear the file if all inserts succeed
@@ -543,7 +553,18 @@ async function appendSecretToFile(secret) {
                 hatchedBy = VALUES(hatchedBy),
                 discordUserId = VALUES(discordUserId)
         `;
-        await pool.query(insertQuery, [id, name, timestamp, imageUrl, totalHatched, rarity, hatchedBy, discordUserId]);
+
+        let finalImageUrl = imageUrl;
+        if (finalImageUrl) {
+            try {
+                const [existingImgs] = await pool.query('SELECT imageUrl FROM secrets WHERE name = ? AND imageUrl IS NOT NULL LIMIT 1', [name]);
+                if (existingImgs.length > 0) {
+                    finalImageUrl = null;
+                }
+            } catch (e) {}
+        }
+
+        await pool.query(insertQuery, [id, name, timestamp, finalImageUrl, totalHatched, rarity, hatchedBy, discordUserId]);
         flushAllBackupsToDatabase().catch(err => {
             console.error('[Database] Async flush backups failed:', err.message);
         });
@@ -642,10 +663,9 @@ async function sendHatchEmbed(hatchData, client) {
         .setColor(0xFBE7BD)
         .setTimestamp();
 
-    const hatcheeIsInServer = hatcheeId && (await mainChannel.guild.members.fetch(hatcheeId).catch(() => null));
-    if (hatcheeIsInServer && toMainChannelPing.includes(hatcheeId)) {
-        embed.setFooter({ text: 'To not get pinged, run /turnoffping in bot commands' });
-    } else if (hatcheePref?.type === 1) {
+    let footerText = 'To not get pinged, run /turnoffping in bot commands';
+
+    if (hatcheePref?.type === 1) {
         let hatcheeDisplay = hatchData.hatchedBy || 'Unknown';
         const finalHatcheeId = hatcheePref.discordId || hatcheeId;
         if (finalHatcheeId) {
@@ -656,8 +676,10 @@ async function sendHatchEmbed(hatchData, client) {
                 console.error(`[Footer] Could not fetch user ${finalHatcheeId} for footer display name:`, e);
             }
         }
-        embed.setFooter({ text: `Hatched by ${hatcheeDisplay}` });
+        footerText = `Hatched by ${hatcheeDisplay} | ${footerText}`;
     }
+
+    embed.setFooter({ text: footerText });
 
     for (const [userId, messageType] of toDm.entries()) {
         try {
@@ -939,5 +961,51 @@ module.exports.waitForRoverAvailable = async function(timeoutMs = 10 * 60 * 1000
         const waitFor = Math.min((roverRateLimitUntil || 0) - Date.now(), 1000);
         if (waitFor > 0) await new Promise(r => setTimeout(r, waitFor));
         if (Date.now() - start > timeoutMs) break;
+    }
+};
+
+module.exports.searchSecretsDB = async function(discordId, robloxUsername) {
+    let query = '';
+    let params = [];
+    if (discordId && robloxUsername) {
+        query = 'SELECT * FROM secrets WHERE discordUserId = ? OR LOWER(hatchedBy) LIKE ? ORDER BY timestamp ASC';
+        params = [discordId, `%${robloxUsername.toLowerCase()}%`];
+    } else if (discordId) {
+        query = 'SELECT * FROM secrets WHERE discordUserId = ? ORDER BY timestamp ASC';
+        params = [discordId];
+    } else if (robloxUsername) {
+        query = 'SELECT * FROM secrets WHERE LOWER(hatchedBy) LIKE ? ORDER BY timestamp ASC';
+        params = [`%${robloxUsername.toLowerCase()}%`];
+    } else {
+        return [];
+    }
+    
+    try {
+        const [rows] = await pool.query(query, params);
+        const nameToImage = new Map();
+        
+        for (let row of rows) {
+            // Reconstruct ISO timestamp as done by iterateAllEntries
+            if (row.timestamp) {
+                row.timestamp = new Date(row.timestamp).toISOString().replace(/\\.\\d{3}Z$/, '');
+            }
+            if (!row.imageUrl) {
+                if (nameToImage.has(row.name)) {
+                    row.imageUrl = nameToImage.get(row.name);
+                } else {
+                    const [imgRows] = await pool.query('SELECT imageUrl FROM secrets WHERE name = ? AND imageUrl IS NOT NULL LIMIT 1', [row.name]);
+                    if (imgRows.length > 0) {
+                        row.imageUrl = imgRows[0].imageUrl;
+                        nameToImage.set(row.name, imgRows[0].imageUrl);
+                    }
+                }
+            } else {
+                nameToImage.set(row.name, row.imageUrl);
+            }
+        }
+        return rows;
+    } catch (e) {
+        console.error('[Database] Failed to search secrets:', e);
+        return [];
     }
 };

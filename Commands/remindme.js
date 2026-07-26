@@ -109,17 +109,7 @@ async function handleRemindCommand(interactionOrMessage, client, timeString, rem
         sentMsg = await interactionOrMessage.channel.send(confirmationMessage);
     }
 
-    try {
-        const isGuild = interactionOrMessage.guild || (interactionOrMessage.channel && interactionOrMessage.channel.guild);
-        const isEphemeral = interactionOrMessage.ephemeral || (interactionOrMessage.replied && interactionOrMessage.ephemeral);
-        if (isGuild && sentMsg && !isEphemeral && typeof sentMsg.delete === 'function') {
-            setTimeout(() => {
-                sentMsg.delete().catch(() => {});
-            }, 30000);
-        }
-    } catch (err) {
-        console.error('Error scheduling reminder message deletion:', err);
-    }
+
 }
 
 
