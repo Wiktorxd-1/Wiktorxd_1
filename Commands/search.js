@@ -258,6 +258,62 @@ async function googleSearch(q, totalWanted = 5, pageOffset = 0) {
         }
     }
 
+    // 3. Fallback to DuckDuckGo Lite Scraping if Yahoo returned no results
+    if (results.length === 0) {
+        try {
+            const response = await axios.post("https://lite.duckduckgo.com/lite/", `q=${encodeURIComponent(q)}&s=${pageOffset}`, {
+                headers: {
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "User-Agent": userAgent,
+                    "Accept-Language": "en-US,en;q=0.9"
+                },
+                timeout: 10000
+            });
+
+            const $ = cheerio.load(response.data);
+
+            $("tr").each((index, element) => {
+                if (results.length >= totalWanted) return false;
+
+                const titleElem = $(element).find(".result-link");
+                if (titleElem.length > 0) {
+                    let title = titleElem.text().trim().replace(/\s+/g, ' ');
+                    let link = titleElem.attr("href");
+
+                    if (link && link.startsWith('/l/?uddg=')) {
+                         try {
+                             const parsed = new URL('https://lite.duckduckgo.com' + link);
+                             link = decodeURIComponent(parsed.searchParams.get('uddg'));
+                         } catch {}
+                    }
+
+                    if (title && link && link.startsWith('http')) {
+                        let displayLink = '';
+                        try {
+                            displayLink = new URL(link).host;
+                        } catch {
+                            displayLink = link;
+                        }
+
+                        results.push({
+                            title,
+                            link,
+                            snippet: 'No description available.',
+                            displayLink
+                        });
+                    }
+                }
+
+                const snippetElem = $(element).find(".result-snippet");
+                if (snippetElem.length > 0 && results.length > 0) {
+                    results[results.length - 1].snippet = snippetElem.text().trim().replace(/\s+/g, ' ');
+                }
+            });
+        } catch (err) {
+            console.error('DuckDuckGo fallback search scraping failed:', err.message);
+        }
+    }
+
     await canConsumeQuota(1);
 
     return { items: results };
