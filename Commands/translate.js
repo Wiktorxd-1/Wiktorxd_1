@@ -1,6 +1,6 @@
 const { SlashCommandBuilder, EmbedBuilder, MessageFlags } = require('discord.js');
 const Iso6391 = require('iso-639-1');
-const translate = require('@iamtraction/google-translate');
+const translate = require('google-translate-api-x');
 
 function titleCaseEachWord(str) {
   if (!str) return str;
