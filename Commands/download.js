@@ -1349,6 +1349,21 @@ module.exports = {
             if (metadata.isSpotify) {
                 await i.update({ content: 'Downloading from Spotify... <a:loading:1524146146937667784>', embeds: [], components: [] });
                 const spotdlPath = '/home/container/.local/bin/spotdl';
+                
+                if (!fs.existsSync(spotdlPath)) {
+                    await interaction.editReply({ content: 'Installing required dependencies (this will take a moment)... <a:loading:1524146146937667784>', embeds: [], components: [] });
+                    try {
+                        execSync('pip install spotdl', { timeout: 120000 });
+                    } catch (e) {
+                        try {
+                            execSync('python3 -m pip install spotdl', { timeout: 120000 });
+                        } catch (e2) {
+                            console.error('Failed to install spotdl:', e2);
+                        }
+                    }
+                    await interaction.editReply({ content: 'Downloading from Spotify... <a:loading:1524146146937667784>', embeds: [], components: [] });
+                }
+
                 const safeTitle = (metadata.title || 'spotify').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 50);
                 const outTemplate = path.join(tempDir, safeTitle + '.mp3');
                 try {
