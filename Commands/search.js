@@ -392,10 +392,12 @@ module.exports = {
             let pageOffset = 0;
             let embeds = items.map(makeEmbedForResult);
 
+            const getSafeUrl = (link) => (!link || link.length > 512) ? 'https://google.com' : link;
+
             const openButton = new ButtonBuilder()
                 .setLabel('Open')
                 .setStyle(ButtonStyle.Link)
-                .setURL(items[index].link || items[index].formattedUrl || '#');
+                .setURL(getSafeUrl(items[index].link || items[index].formattedUrl));
 
             const prev = new ButtonBuilder()
                 .setCustomId('search_prev')
@@ -461,7 +463,7 @@ module.exports = {
                     }
                 }
 
-                const openBtn = ButtonBuilder.from(openButton).setURL(items[index].link || '#');
+                const openBtn = ButtonBuilder.from(openButton).setURL(getSafeUrl(items[index].link));
                 const prevBtn = ButtonBuilder.from(prev).setDisabled(index === 0);
                 const nextBtn = ButtonBuilder.from(next).setDisabled(index === embeds.length - 1);
                 const row = new ActionRowBuilder().addComponents(prevBtn, nextBtn, openBtn);
@@ -472,7 +474,7 @@ module.exports = {
             collector.on('end', () => {
                 const prevBtn = ButtonBuilder.from(prev).setDisabled(true);
                 const nextBtn = ButtonBuilder.from(next).setDisabled(true);
-                const openBtn = ButtonBuilder.from(openButton).setURL(items[index].link || '#');
+                const openBtn = ButtonBuilder.from(openButton).setURL(getSafeUrl(items[index].link));
                 const row = new ActionRowBuilder().addComponents(prevBtn, nextBtn, openBtn);
                 message.edit({ components: [row] }).catch(() => {});
             });
