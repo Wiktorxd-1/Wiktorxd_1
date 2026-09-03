@@ -1353,13 +1353,11 @@ module.exports = {
                 if (!fs.existsSync(spotdlPath)) {
                     await interaction.editReply({ content: 'Installing required dependencies (this will take a moment)... <a:loading:1524146146937667784>', embeds: [], components: [] });
                     try {
-                        execSync('pip install spotdl', { timeout: 120000 });
+                        execSync('curl -sS https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py && python3 /tmp/get-pip.py --break-system-packages && python3 -m pip install spotdl --break-system-packages', { timeout: 180000 });
                     } catch (e) {
-                        try {
-                            execSync('python3 -m pip install spotdl', { timeout: 120000 });
-                        } catch (e2) {
-                            console.error('Failed to install spotdl:', e2);
-                        }
+                        console.error('Failed to install spotdl:', e);
+                        await interaction.editReply({ content: `❌ Spotify download failed: Could not automatically install spotdl dependencies.`, embeds: [], components: [] });
+                        return;
                     }
                     await interaction.editReply({ content: 'Downloading from Spotify... <a:loading:1524146146937667784>', embeds: [], components: [] });
                 }
