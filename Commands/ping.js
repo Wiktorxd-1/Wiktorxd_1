@@ -1,6 +1,33 @@
 const { SlashCommandBuilder } = require('discord.js');
 const https = require('https');
 
+function httpPing(url) {
+    return new Promise((resolve) => {
+        const start = Date.now();
+        try {
+            const parsed = new URL(url);
+            const req = https.request({
+                protocol: parsed.protocol,
+                hostname: parsed.hostname,
+                path: parsed.pathname || '/',
+                method: 'HEAD',
+                timeout: 2000
+            }, (res) => {
+                res.resume();
+                res.on('end', () => resolve(`${Date.now() - start}ms`));
+            });
+            req.on('error', () => resolve('timeout'));
+            req.on('timeout', () => {
+                req.destroy();
+                resolve('timeout');
+            });
+            req.end();
+        } catch {
+            resolve('timeout');
+        }
+    });
+}
+
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('ping')
@@ -14,21 +41,6 @@ module.exports = {
             const sent = await message.reply('Checking...');
             const botLatency = sent.createdTimestamp - message.createdTimestamp;
             const wsLatency = client.ws.ping >= 0 ? `${client.ws.ping}ms` : 'N/A';
-
-            function httpPing(url) {
-                return new Promise((resolve) => {
-                    const start = Date.now();
-                    const req = https.get(url, res => {
-                        res.on('data', () => {});
-                        res.on('end', () => resolve(`${Date.now() - start}ms`));
-                    });
-                    req.on('error', () => resolve('timeout'));
-                    req.setTimeout(2000, () => {
-                        req.destroy();
-                        resolve('timeout');
-                    });
-                });
-            }
 
             const [googlePing, cloudflarePing] = await Promise.all([
                 httpPing('https://google.com'),
@@ -45,26 +57,10 @@ module.exports = {
         }
     },
     async execute(interaction, client) {
-        await interaction.reply({ content: 'Pinging...' });
-        const sent = await interaction.fetchReply();
+        const sent = await interaction.reply({ content: 'Pinging...', fetchReply: true });
 
         const botLatency = sent.createdTimestamp - interaction.createdTimestamp;
         const wsLatency = client.ws.ping >= 0 ? `${client.ws.ping}ms` : 'N/A';
-
-        function httpPing(url) {
-            return new Promise((resolve) => {
-                const start = Date.now();
-                const req = https.get(url, res => {
-                    res.on('data', () => {});
-                    res.on('end', () => resolve(`${Date.now() - start}ms`));
-                });
-                req.on('error', () => resolve('timeout'));
-                req.setTimeout(2000, () => {
-                    req.destroy();
-                    resolve('timeout');
-                });
-            });
-        }
 
         const [googlePing, cloudflarePing] = await Promise.all([
             httpPing('https://google.com'),
@@ -80,4 +76,4 @@ module.exports = {
                 `1.1.1.1 ⇒ \`${cloudflarePing}\``
         });
     }
-}
+};
