@@ -270,15 +270,11 @@ module.exports = {
                                 for (const friend of pageFriends) {
                                     const friendInfo = friendMap.get(friend.id) || friend;
                                     const displayName = friendInfo.displayName || friendInfo.name || `User ${friend.id}`;
-                                    const username = friendInfo.name ? `@${friendInfo.name}` : '';
-                                    const fieldTitle = friendInfo.displayName && friendInfo.name && friendInfo.displayName !== friendInfo.name
-                                        ? `${friendInfo.displayName} (${username})`
-                                        : (friendInfo.name || friendInfo.displayName || `User ${friend.id}`);
-                                    const fieldLinkText = friendInfo.name || friendInfo.displayName || 'Profile';
+                                    const usernameTag = friendInfo.name ? `@${friendInfo.name}` : `User ${friend.id}`;
 
                                     embed.addFields({
-                                        name: fieldTitle.substring(0, 256),
-                                        value: `[${fieldLinkText}](https://www.roblox.com/users/${friend.id}/profile)`,
+                                        name: displayName.substring(0, 256),
+                                        value: `[${usernameTag}](https://www.roblox.com/users/${friend.id}/profile)`,
                                         inline: true
                                     });
                                 }
