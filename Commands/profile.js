@@ -37,7 +37,7 @@ module.exports = {
             const makeRobloxRequest = async (url, config = {}, retries = 3, delaySeconds = 5) => {
                 for (let i = 0; i < retries; i++) {
                     try {
-                        const response = await axios.get(url, config);
+                        const response = await axios({ url, ...config });
                         return response;
                     } catch (error) {
                         if (error.response && error.response.status === 429) {
@@ -106,7 +106,7 @@ module.exports = {
                     makeRobloxRequest(`https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${targetUserId}&size=420x420&format=Png&isCircular=false`),
                     makeRobloxRequest(`https://friends.roblox.com/v1/users/${targetUserId}/followers/count`),
                     makeRobloxRequest(`https://friends.roblox.com/v1/users/${targetUserId}/followings/count`),
-                    makeRobloxRequest(`https://friends.roblox.com/v1/users/${targetUserId}/friends`, { params: { limit: 50 } }),
+                    makeRobloxRequest(`https://friends.roblox.com/v1/users/${targetUserId}/friends`),
                     makeRobloxRequest(`https://groups.roblox.com/v1/users/${targetUserId}/groups/roles`),
                     guildId ? makeRoverRequest(`https://registry.rover.link/api/guilds/${guildId}/roblox-to-discord/${targetUserId}`) : Promise.resolve(null)
                 ]);
@@ -227,19 +227,60 @@ module.exports = {
                         await i.deferUpdate();
 
                         if (i.customId === 'show_friends') {
+                            const friendMap = new Map();
+                            const userIds = allFriends.map(f => f.id);
+                            const chunkSize = 100;
+                            const batchPromises = [];
+
+                            for (let c = 0; c < userIds.length; c += chunkSize) {
+                                const chunk = userIds.slice(c, c + chunkSize);
+                                batchPromises.push(
+                                    makeRobloxRequest('https://users.roblox.com/v1/users', {
+                                        method: 'POST',
+                                        data: { userIds: chunk, excludeBannedUsers: false }
+                                    }).catch(err => {
+                                        console.error('[Profile] Error resolving friend usernames batch:', err?.message);
+                                        return null;
+                                    })
+                                );
+                            }
+
+                            const batchResponses = await Promise.all(batchPromises);
+                            for (const res of batchResponses) {
+                                if (res?.data?.data && Array.isArray(res.data.data)) {
+                                    for (const user of res.data.data) {
+                                        friendMap.set(user.id, user);
+                                    }
+                                }
+                            }
+
                             const friendsPages = [];
                             const friendsPerPage = 25;
+                            const totalPages = Math.ceil(allFriends.length / friendsPerPage) || 1;
 
                             for (let j = 0; j < allFriends.length; j += friendsPerPage) {
                                 const pageFriends = allFriends.slice(j, j + friendsPerPage);
+                                const pageNum = Math.floor(j / friendsPerPage) + 1;
                                 const embed = new EmbedBuilder()
                                     .setColor(0xFBE7BD)
-                                    .setTitle(`${targetUsername}'s Friends (Page ${friendsPages.length + 1}/${Math.ceil(allFriends.length / friendsPerPage)})`)
+                                    .setTitle(`${targetUsername}'s Friends (Page ${pageNum}/${totalPages})`)
                                     .setDescription(`Total Friends: ${allFriends.length}`)
                                     .setTimestamp();
 
                                 for (const friend of pageFriends) {
-                                    embed.addFields({ name: friend.name, value: `[${friend.name}](https://www.roblox.com/users/${friend.id}/profile)`, inline: true });
+                                    const friendInfo = friendMap.get(friend.id) || friend;
+                                    const displayName = friendInfo.displayName || friendInfo.name || `User ${friend.id}`;
+                                    const username = friendInfo.name ? `@${friendInfo.name}` : '';
+                                    const fieldTitle = friendInfo.displayName && friendInfo.name && friendInfo.displayName !== friendInfo.name
+                                        ? `${friendInfo.displayName} (${username})`
+                                        : (friendInfo.name || friendInfo.displayName || `User ${friend.id}`);
+                                    const fieldLinkText = friendInfo.name || friendInfo.displayName || 'Profile';
+
+                                    embed.addFields({
+                                        name: fieldTitle.substring(0, 256),
+                                        value: `[${fieldLinkText}](https://www.roblox.com/users/${friend.id}/profile)`,
+                                        inline: true
+                                    });
                                 }
                                 friendsPages.push(embed);
                             }
