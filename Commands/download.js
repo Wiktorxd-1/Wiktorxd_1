@@ -1366,7 +1366,7 @@ module.exports = {
                 ensureTempDir(spotifyTrackDir);
                 try {
                     await execAsync(
-                        `${spotdlPath} download "${metadata.spotifyUrl}" --output "${spotifyTrackDir}" --format mp3 --bitrate ${state.audioBitrate}k --threads 4 --dont-filter-results --overwrite force --log-level ERROR`,
+                        `${spotdlPath} download "${metadata.spotifyUrl}" --output "${spotifyTrackDir}" --format mp3 --audio youtube soundcloud --bitrate ${state.audioBitrate}k --threads 4 --dont-filter-results --no-cache --max-retries 1 --overwrite force --log-level ERROR`,
                         { timeout: 180000 }
                     );
                     const mp3Files = fs.readdirSync(spotifyTrackDir).filter(f => f.endsWith('.mp3'));
