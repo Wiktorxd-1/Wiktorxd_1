@@ -159,10 +159,14 @@ client.on('interactionCreate', async interaction => {
             await command.execute(interaction, client);
         } catch (error) {
             console.error(error);
-            if (interaction.replied || interaction.deferred) {
-                await interaction.followUp({ content: 'There was an error executing this command!', flags: 64 });
-            } else {
-                await interaction.reply({ content: 'There was an error executing this command!', flags: 64 });
+            try {
+                if (interaction.replied || interaction.deferred) {
+                    await interaction.followUp({ content: 'There was an error executing this command!', flags: 64 });
+                } else {
+                    await interaction.reply({ content: 'There was an error executing this command!', flags: 64 });
+                }
+            } catch (replyError) {
+                // Interaction expired or already acknowledged
             }
         }
     } else if (interaction.isStringSelectMenu()) {

@@ -94,111 +94,62 @@ module.exports = {
                 let followersCount = 'N/A';
                 let followingCount = 'N/A';
                 let profileDescription = 'No description provided.';
-
-                try {
-                    const profileInfoResponse = await makeRobloxRequest(`https://users.roblox.com/v1/users/${targetUserId}`);
-                    if (profileInfoResponse.data) {
-                        const creationDate = new Date(profileInfoResponse.data.created);
-                        creationDateTimestamp = `<t:${Math.floor(creationDate.getTime() / 1000)}:R>`;
-                        profileDescription = profileInfoResponse.data.description || 'No description provided.';
-                    }
-                } catch (error) {
-                    console.error(`Error fetching general profile info for ${targetUsername}:`, error.message);
-                }
-
-                try {
-                    const avatarResponse = await makeRobloxRequest(`https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${targetUserId}&size=420x420&format=Png&isCircular=false`);
-                    if (avatarResponse.data && avatarResponse.data.data && avatarResponse.data.data.length > 0) {
-                        targetAvatarUrl = avatarResponse.data.data[0].imageUrl;
-                    }
-                } catch (error) {
-                    console.error(`Error fetching avatar for ${targetUsername}:`, error.message);
-                }
-
-                try {
-                    const followersResponse = await makeRobloxRequest(`https://friends.roblox.com/v1/users/${targetUserId}/followers/count`);
-                    if (followersResponse.data && typeof followersResponse.data.count === 'number') {
-                        followersCount = followersResponse.data.count;
-                    }
-                } catch (error) {
-                    console.error(`Error fetching followers count for ${targetUsername}:`, error.message);
-                }
-
-                try {
-                    const followingResponse = await makeRobloxRequest(`https://friends.roblox.com/v1/users/${targetUserId}/followings/count`);
-                    if (followingResponse.data && typeof followingResponse.data.count === 'number') {
-                        followingCount = followingResponse.data.count;
-                    }
-                } catch (error) {
-                    console.error(`Error fetching following count for ${targetUsername}:`, error.message);
-                }
-
                 let allFriends = [];
                 let friendCount = 0;
-                let friendsCursor = null;
-                for (let i = 0; i < 4; i++) {
-                    try {
-                        const friendsResponse = await makeRobloxRequest(`https://friends.roblox.com/v1/users/${targetUserId}/friends`, {
-                            params: {
-                                limit: 50,
-                                cursor: friendsCursor
-                            }
-                        });
-
-                        if (friendsResponse.data && friendsResponse.data.data) {
-                            allFriends = allFriends.concat(friendsResponse.data.data);
-                            friendsCursor = friendsResponse.data.nextPageCursor;
-                            if (!friendsCursor) break;
-                        } else {
-                            break;
-                        }
-                        await new Promise(resolve => setTimeout(resolve, 500));
-                    } catch (error) {
-                        console.error(`Error fetching friends page ${i + 1} for ${targetUsername}:`, error.message);
-                        break;
-                    }
-                }
-                friendCount = allFriends.length;
-
                 let userGroups = [];
                 let groupCount = 0;
-                try {
-                    const groupsResponse = await makeRobloxRequest(`https://groups.roblox.com/v1/users/${targetUserId}/groups/roles`);
-                    if (groupsResponse.data && groupsResponse.data.data) {
-                        userGroups = groupsResponse.data.data;
-                        groupCount = userGroups.length;
-                    }
-                } catch (error) {
-                    console.error(`Error fetching groups for ${targetUsername}:`, error.message);
-                }
-
                 const guildId = interaction.guild?.id;
                 let discordUserInfo = 'Not linked';
 
-                if (guildId) {
-                    try {
-                        const roverResponse = await makeRoverRequest(`https://registry.rover.link/api/guilds/${guildId}/roblox-to-discord/${targetUserId}`);
-                        if (roverResponse.data && roverResponse.data.discordUsers && roverResponse.data.discordUsers.length > 0) {
-                            const linkedUsers = roverResponse.data.discordUsers.map(du => `<@${du.user.id}> (${du.user.username}${du.user.discriminator === '0' ? '' : `#${du.user.discriminator}`})`).join('\n');
-                            discordUserInfo = linkedUsers.substring(0, 1024);
-                        } else {
-                            discordUserInfo = 'Not linked';
-                        }
-                    } catch (error) {
-                        console.error(`Error fetching Discord info from Rover for ${targetUsername} in guild ${guildId}:`, error.message);
-                        if (error.response && error.response.data && error.response.data.errorCode) {
-                            if (error.response.data.errorCode === 'user_not_found') {
-                                discordUserInfo = 'not found';
-                            } else if (error.response.status === 429) {
-                                discordUserInfo = 'rate limited';
-                            } else {
-                                discordUserInfo = 'Error fetching from Rover';
-                            }
-                        } else if (error.response && error.response.status === 429) {
-                            discordUserInfo = 'rate limited';
-                        } else {
-                            discordUserInfo = 'Error fetching from Rover';
-                        }
+                const [profileRes, avatarRes, followersRes, followingRes, friendsRes, groupsRes, roverRes] = await Promise.allSettled([
+                    makeRobloxRequest(`https://users.roblox.com/v1/users/${targetUserId}`),
+                    makeRobloxRequest(`https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${targetUserId}&size=420x420&format=Png&isCircular=false`),
+                    makeRobloxRequest(`https://friends.roblox.com/v1/users/${targetUserId}/followers/count`),
+                    makeRobloxRequest(`https://friends.roblox.com/v1/users/${targetUserId}/followings/count`),
+                    makeRobloxRequest(`https://friends.roblox.com/v1/users/${targetUserId}/friends`, { params: { limit: 50 } }),
+                    makeRobloxRequest(`https://groups.roblox.com/v1/users/${targetUserId}/groups/roles`),
+                    guildId ? makeRoverRequest(`https://registry.rover.link/api/guilds/${guildId}/roblox-to-discord/${targetUserId}`) : Promise.resolve(null)
+                ]);
+
+                if (profileRes.status === 'fulfilled' && profileRes.value?.data) {
+                    const creationDate = new Date(profileRes.value.data.created);
+                    creationDateTimestamp = `<t:${Math.floor(creationDate.getTime() / 1000)}:R>`;
+                    profileDescription = profileRes.value.data.description || 'No description provided.';
+                }
+
+                if (avatarRes.status === 'fulfilled' && avatarRes.value?.data?.data?.[0]?.imageUrl) {
+                    targetAvatarUrl = avatarRes.value.data.data[0].imageUrl;
+                }
+
+                if (followersRes.status === 'fulfilled' && typeof followersRes.value?.data?.count === 'number') {
+                    followersCount = followersRes.value.data.count;
+                }
+
+                if (followingRes.status === 'fulfilled' && typeof followingRes.value?.data?.count === 'number') {
+                    followingCount = followingRes.value.data.count;
+                }
+
+                if (friendsRes.status === 'fulfilled' && friendsRes.value?.data?.data) {
+                    allFriends = friendsRes.value.data.data;
+                    friendCount = allFriends.length;
+                }
+
+                if (groupsRes.status === 'fulfilled' && groupsRes.value?.data?.data) {
+                    userGroups = groupsRes.value.data.data;
+                    groupCount = userGroups.length;
+                }
+
+                if (roverRes.status === 'fulfilled' && roverRes.value?.data?.discordUsers?.length > 0) {
+                    const linkedUsers = roverRes.value.data.discordUsers.map(du => `<@${du.user.id}> (${du.user.username}${du.user.discriminator === '0' ? '' : `#${du.user.discriminator}`})`).join('\n');
+                    discordUserInfo = linkedUsers.substring(0, 1024);
+                } else if (roverRes.status === 'rejected') {
+                    const err = roverRes.reason;
+                    if (err.response?.data?.errorCode === 'user_not_found') {
+                        discordUserInfo = 'not found';
+                    } else if (err.response?.status === 429) {
+                        discordUserInfo = 'rate limited';
+                    } else {
+                        discordUserInfo = 'Error fetching from Rover';
                     }
                 }
 

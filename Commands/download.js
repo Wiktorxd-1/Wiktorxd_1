@@ -1284,7 +1284,6 @@ module.exports = {
     async execute(interaction) {
         await interaction.reply({ 
             content: 'Processing... <a:loading:1524146146937667784>', 
-            files: [new AttachmentBuilder('https://upload.wikimedia.org/wikipedia/commons/c/ca/1x1.png', { name: '1x1.png' })],
             flags: 0 
         });
 
@@ -1307,8 +1306,7 @@ module.exports = {
         const replyMsg = await interaction.editReply({ 
             content: null, 
             embeds: [buildEmbed(metadata, state)], 
-            components: getComponents(state, metadata.maxQuality, metadata.duration),
-            files: [new AttachmentBuilder('https://upload.wikimedia.org/wikipedia/commons/c/ca/1x1.png', { name: '1x1.png' })]
+            components: getComponents(state, metadata.maxQuality, metadata.duration)
         });
         const collector = replyMsg.createMessageComponentCollector({ time: 300_000 });
 
@@ -1333,8 +1331,7 @@ module.exports = {
                 stateMap[i.customId]();
                 await i.update({ 
                     embeds: [buildEmbed(metadata, state)], 
-                    components: getComponents(state, metadata.maxQuality, metadata.duration),
-                    files: [new AttachmentBuilder('https://upload.wikimedia.org/wikipedia/commons/c/ca/1x1.png', { name: '1x1.png' })]
+                    components: getComponents(state, metadata.maxQuality, metadata.duration)
                 });
                 return;
             }
@@ -1349,11 +1346,14 @@ module.exports = {
             if (metadata.isSpotify) {
                 await i.update({ content: 'Downloading from Spotify... <a:loading:1524146146937667784>', embeds: [], components: [] });
                 const spotdlPath = '/home/container/.local/bin/spotdl';
+                const { exec } = require('child_process');
+                const util = require('util');
+                const execAsync = util.promisify(exec);
                 
                 if (!fs.existsSync(spotdlPath)) {
                     await interaction.editReply({ content: 'Installing required dependencies (this will take a moment)... <a:loading:1524146146937667784>', embeds: [], components: [] });
                     try {
-                        execSync('curl -sS https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py && python3 /tmp/get-pip.py --break-system-packages && python3 -m pip install spotdl --break-system-packages', { timeout: 180000 });
+                        await execAsync('curl -sS https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py && python3 /tmp/get-pip.py --break-system-packages && python3 -m pip install spotdl --break-system-packages', { timeout: 180000 });
                     } catch (e) {
                         console.error('Failed to install spotdl:', e);
                         await interaction.editReply({ content: `❌ Spotify download failed: Could not automatically install spotdl dependencies.`, embeds: [], components: [] });
@@ -1362,19 +1362,18 @@ module.exports = {
                     await interaction.editReply({ content: 'Downloading from Spotify... <a:loading:1524146146937667784>', embeds: [], components: [] });
                 }
 
-                const safeTitle = (metadata.title || 'spotify').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 50);
-                const outTemplate = path.join(tempDir, safeTitle + '.mp3');
+                const spotifyTrackDir = path.join(tempDir, `spotify_${Date.now()}`);
+                ensureTempDir(spotifyTrackDir);
                 try {
-                    execSync(
-                        `${spotdlPath} download "${metadata.spotifyUrl}" --output "${tempDir}" --format mp3 --bitrate ${state.audioBitrate}k --overwrite force --log-level ERROR`,
+                    await execAsync(
+                        `${spotdlPath} download "${metadata.spotifyUrl}" --output "${spotifyTrackDir}" --format mp3 --bitrate ${state.audioBitrate}k --threads 4 --dont-filter-results --overwrite force --log-level ERROR`,
                         { timeout: 180000 }
                     );
-                    const mp3Files = fs.readdirSync(tempDir).filter(f => f.endsWith('.mp3'));
+                    const mp3Files = fs.readdirSync(spotifyTrackDir).filter(f => f.endsWith('.mp3'));
                     if (!mp3Files.length) throw new Error('spotdl finished but no mp3 found in output directory');
-                    mp3Files.sort((a, b) => fs.statSync(path.join(tempDir, b)).mtimeMs - fs.statSync(path.join(tempDir, a)).mtimeMs);
+                    mp3Files.sort((a, b) => fs.statSync(path.join(spotifyTrackDir, b)).mtimeMs - fs.statSync(path.join(spotifyTrackDir, a)).mtimeMs);
                     const mp3File = mp3Files[0];
-                    const mp3Path = path.join(tempDir, mp3File);
-                    const buf = fs.readFileSync(mp3Path);
+                    const mp3Path = path.join(spotifyTrackDir, mp3File);
                     await interaction.editReply({
                         content: `📄 \`${mp3File}\``,
                         files: [new AttachmentBuilder(mp3Path, { name: mp3File })],
@@ -1382,7 +1381,9 @@ module.exports = {
                         components: []
                     }).catch(() => null);
                     tryUnlink(mp3Path);
+                    try { fs.rmdirSync(spotifyTrackDir); } catch {}
                 } catch (e) {
+                    try { fs.rmSync(spotifyTrackDir, { recursive: true, force: true }); } catch {}
                     await interaction.editReply({ content: `❌ Spotify download failed: \`${e.message}\``, components: [], files: [] });
                 }
                 return;

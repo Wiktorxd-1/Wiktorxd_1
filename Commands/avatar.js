@@ -28,7 +28,7 @@ module.exports = {
             user = targetUserOption;
             userId = user.id;
             if (interaction.guild) {
-                try { member = await interaction.guild.members.fetch(userId); } catch { member = null; }
+                member = interaction.options.getMember('target') || interaction.guild.members.cache.get(userId) || null;
             }
             username = user.username;
             displayName = member?.displayName || user.globalName || user.username;
@@ -56,25 +56,22 @@ module.exports = {
             }
         }
 
-        
         if (!avatarURLToDisplay) {
             userId = userId || (user && user.id);
             if (userId) {
                 try {
-                    const apiRes = await axios.get(`https://discordpfp.vercel.app/api/json?id=${encodeURIComponent(userId)}`);
+                    const apiRes = await axios.get(`https://discordpfp.vercel.app/api/json?id=${encodeURIComponent(userId)}`, { timeout: 3000 });
                     const apiData = apiRes.data;
                     if (apiData && apiData.success === true && apiData.avatar_url) {
                         avatarBaseURL = apiData.avatar_url.split('?')[0];
                         avatarURLToDisplay = `${avatarBaseURL}?size=256`;
                     }
-                } catch (e) {
-                    
-                }
+                } catch (e) {}
             }
         }
 
         if (!avatarURLToDisplay) {
-            return interaction.reply({ content: 'Could not find avatar for the user', flags: 64});
+            return interaction.reply({ content: 'Could not find avatar for the user', flags: 64 });
         }
 
         const initialEmbed = new EmbedBuilder()
@@ -91,17 +88,11 @@ module.exports = {
         const initialActionRow = new ActionRowBuilder()
             .addComponents(showSizesButton);
 
-        await interaction.reply({
+        const replyMessage = await interaction.reply({
             embeds: [initialEmbed],
-            components: [initialActionRow]
+            components: [initialActionRow],
+            fetchReply: true
         });
-        let replyMessage;
-        try {
-            replyMessage = await interaction.fetchReply();
-        } catch (error) {
-            console.error('Failed to fetch reply:', error.message);
-            return;
-        }
 
         const showSizesCollector = replyMessage.createMessageComponentCollector({
             filter: i => i.user.id === interaction.user.id && i.customId === 'avatar_show_sizes',

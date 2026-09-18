@@ -28,11 +28,9 @@ module.exports = {
             user = targetUserOption;
             userId = user.id;
             if (interaction.guild) {
-                try { member = await interaction.guild.members.fetch(userId); } catch { member = null; }
+                member = interaction.options.getMember('target') || interaction.guild.members.cache.get(userId) || null;
             }
         }
-
-        
 
         if (!user) {
             user = interaction.user;
@@ -54,19 +52,17 @@ module.exports = {
             }
         }
 
-        
         if (!pfpURLToDisplay) {
             userId = userId || (user && user.id);
             if (userId) {
                 try {
-                    const apiRes = await axios.get(`https://discordpfp.vercel.app/api/json?id=${encodeURIComponent(userId)}`);
+                    const apiRes = await axios.get(`https://discordpfp.vercel.app/api/json?id=${encodeURIComponent(userId)}`, { timeout: 3000 });
                     const apiData = apiRes.data;
                     if (apiData && apiData.success === true && apiData.avatar_url) {
                         pfpBaseURL = apiData.avatar_url.split('?')[0];
                         pfpURLToDisplay = `${pfpBaseURL}?size=256`;
                     }
-                } catch (e) {
-                }
+                } catch (e) {}
             }
         }
 
@@ -88,17 +84,11 @@ module.exports = {
         const initialPfpActionRow = new ActionRowBuilder()
             .addComponents(showSizesPfpButton);
 
-        await interaction.reply({
+        const replyMessage = await interaction.reply({
             embeds: [initialPfpEmbed],
-            components: [initialPfpActionRow]
+            components: [initialPfpActionRow],
+            fetchReply: true
         });
-        let replyMessage;
-        try {
-            replyMessage = await interaction.fetchReply();
-        } catch (error) {
-            console.error('Failed to fetch reply:', error.message);
-            return;
-        }
 
         const showSizesPfpCollector = replyMessage.createMessageComponentCollector({
             filter: i => i.user.id === interaction.user.id && i.customId === 'pfp_show_sizes',

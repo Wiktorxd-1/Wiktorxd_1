@@ -54,27 +54,23 @@ function filterPings(str) {
 
 
 async function handleRemindCommand(interactionOrMessage, client, timeString, reminderText, attachment) {
+    const isInteraction = typeof interactionOrMessage.deferReply === 'function';
+    if (isInteraction && !(interactionOrMessage.deferred || interactionOrMessage.replied)) {
+        await interactionOrMessage.deferReply({}).catch(() => {});
+    }
+
     const userId = interactionOrMessage.author ? interactionOrMessage.author.id : interactionOrMessage.user.id;
     const timeInMs = parseTime(timeString);
 
     if (!timeInMs) {
         const replyContent = "Provide a valid time up to 6 months.";
-        if (interactionOrMessage.reply) {
-            if (interactionOrMessage.deferred || interactionOrMessage.replied) {
-                return interactionOrMessage.editReply({ content: replyContent, flags: 64 });
-            } else {
-                return interactionOrMessage.reply({ content: replyContent, flags: 64 });
-            }
+        if (interactionOrMessage.editReply && (interactionOrMessage.deferred || interactionOrMessage.replied)) {
+            return interactionOrMessage.editReply({ content: replyContent, flags: 64 });
+        } else if (interactionOrMessage.reply) {
+            return interactionOrMessage.reply({ content: replyContent, flags: 64 });
         } else {
             return interactionOrMessage.channel.send(replyContent);
         }
-    }
-
-    if (
-        typeof interactionOrMessage.deferReply === 'function' &&
-        !(interactionOrMessage.deferred || interactionOrMessage.replied)
-    ) {
-        await interactionOrMessage.deferReply({});
     }
 
     const createdAt = Date.now();

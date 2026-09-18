@@ -2,7 +2,6 @@ const { SlashCommandBuilder, EmbedBuilder, ActionRowBuilder, ButtonBuilder, Butt
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
-
 const cheerio = require('cheerio');
 
 const QuotaPath = path.join(__dirname, '../Data/search_quota.json');
@@ -73,262 +72,182 @@ async function canConsumeQuota(count = 1) {
     return { ok: true, used: q.used, limit: q.limit };
 }
 
-async function googleSearch(q, totalWanted = 5, pageOffset = 0) {
+function decodeBingUrl(bingHref) {
+    if (!bingHref) return '';
+    if (bingHref.startsWith('http') && !bingHref.includes('bing.com/ck/a')) {
+        return bingHref;
+    }
+    const uMatch = bingHref.match(/[?&]u=a1([^&]+)/);
+    if (uMatch) {
+        try {
+            return Buffer.from(uMatch[1], 'base64').toString('utf8');
+        } catch {}
+    }
+    return bingHref;
+}
+
+const UA_LIST = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0',
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+];
+
+function getRandomUA() {
+    return UA_LIST[Math.floor(Math.random() * UA_LIST.length)];
+}
+
+// 1. Bing Search Provider
+async function searchBing(query, totalWanted = 10, pageOffset = 0) {
+    const firstIndex = pageOffset + 1;
+    const res = await axios.get('https://www.bing.com/search', {
+        params: {
+            q: query,
+            first: firstIndex,
+            setlang: 'en-US',
+            setmkt: 'en-US',
+            cc: 'US'
+        },
+        headers: {
+            'User-Agent': getRandomUA(),
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.bing.com/'
+        },
+        timeout: 7000
+    });
+
+    const $ = cheerio.load(res.data);
+    const results = [];
+
+    $('li.b_algo').each((_, el) => {
+        if (results.length >= totalWanted) return false;
+
+        const h2 = $(el).find('h2 a');
+        const title = h2.text().trim().replace(/\s+/g, ' ');
+        const rawHref = h2.attr('href');
+        if (!title || !rawHref) return;
+
+        const link = decodeBingUrl(rawHref);
+        if (!link || !link.startsWith('http')) return;
+
+        let displayLink = '';
+        try {
+            displayLink = new URL(link).host;
+        } catch {
+            displayLink = link;
+        }
+
+        let snippet = $(el).find('.b_caption p, .b_algoSlug, .b_lineclamp2, .b_lineclamp3, .b_lineclamp4, .b_snippet').text().trim().replace(/\s+/g, ' ');
+        if (!snippet) {
+            snippet = $(el).find('p').first().text().trim().replace(/\s+/g, ' ');
+        }
+
+        results.push({
+            title,
+            link,
+            snippet: snippet || 'No description available.',
+            displayLink
+        });
+    });
+
+    return results;
+}
+
+// 2. Google Custom Search API (if key configured) or Scraping
+async function searchGoogle(query, totalWanted = 10, pageOffset = 0) {
+    const cfg = await loadGoogleConfig();
+    const apiKey = cfg.apiKey || process.env.GOOGLE_SEARCH_API_KEY || process.env.GOOGLE_API_KEY;
+    const cseId = cfg.cx || cfg.cseId || process.env.GOOGLE_CSE_ID || process.env.GOOGLE_SEARCH_ENGINE_ID;
+
+    if (apiKey && cseId) {
+        const res = await axios.get('https://www.googleapis.com/customsearch/v1', {
+            params: {
+                key: apiKey,
+                cx: cseId,
+                q: query,
+                start: pageOffset + 1,
+                num: Math.min(10, totalWanted)
+            },
+            timeout: 6000
+        });
+        if (res.data?.items) {
+            return res.data.items.map(it => ({
+                title: it.title,
+                link: it.link,
+                snippet: it.snippet || 'No description available.',
+                displayLink: it.displayLink || (new URL(it.link).host),
+                pagemap: it.pagemap
+            }));
+        }
+    }
+    return [];
+}
+
+// 3. Wikipedia Search API
+async function searchWikipedia(query, totalWanted = 10) {
+    const res = await axios.get('https://en.wikipedia.org/w/api.php', {
+        params: {
+            action: 'query',
+            list: 'search',
+            srsearch: query,
+            format: 'json',
+            srlimit: totalWanted,
+            utf8: 1
+        },
+        headers: { 'User-Agent': 'WiktorxdBot/1.0 (admin@wiktorxd-1.dev)' },
+        timeout: 5000
+    });
+
+    const items = res.data?.query?.search || [];
+    return items.map(it => {
+        const snippet = cheerio.load(it.snippet || '').text().trim();
+        return {
+            title: it.title,
+            link: `https://en.wikipedia.org/wiki/${encodeURIComponent(it.title.replace(/ /g, '_'))}`,
+            snippet: snippet || 'Wikipedia article',
+            displayLink: 'en.wikipedia.org'
+        };
+    });
+}
+
+// Multi-provider orchestrator
+async function performSearch(query, totalWanted = 10, pageOffset = 0) {
     const quotaCheck = await loadQuota();
     if (isFinite(quotaCheck.limit) && quotaCheck.used + 1 > quotaCheck.limit) {
         return { error: 'QUOTA_EXCEEDED', neededRequests: 1, quota: quotaCheck };
     }
 
-    const uas_list = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/119.0",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
-    ];
-    const userAgent = uas_list[Math.floor(Math.random() * uas_list.length)];
+    let items = [];
 
-    let results = [];
-
-    // 1. Try Google Search Scraping
+    // 1. Try Google API if configured
     try {
-        const response = await axios.get("https://www.google.com/search", {
-            params: {
-                q: q,
-                hl: "en",
-                gl: "us",
-                gbv: "1",
-                udm: "14", // Disable AI Overviews and force standard web results
-                start: pageOffset
-            },
-            headers: {
-                "User-Agent": userAgent,
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.5"
-            },
-            timeout: 10000
-        });
-
-        const $ = cheerio.load(response.data);
-
-        // Parse desktop layout results
-        $(".tF2Cxc, div.g").each((index, element) => {
-            if (results.length >= totalWanted) return false;
-
-            const titleElem = $(element).find(".DKV0Md, h3").first();
-            const linkElem = $(element).find(".yuRUbf a, a[href^='http']").first();
-            const snippetElem = $(element).find(".VwiC3b, .lEBKkf span, .MUFIy").first();
-
-            const title = titleElem.text().trim();
-            let link = linkElem.attr("href");
-            const snippet = snippetElem.text().trim();
-
-            if (title && link) {
-                if (link.startsWith('/url?q=')) {
-                    try {
-                        const parsedUrl = new URL('https://www.google.com' + link);
-                        link = parsedUrl.searchParams.get('q') || link;
-                    } catch {}
-                }
-
-                if (link.startsWith('http')) {
-                    let displayLink = '';
-                    try {
-                        displayLink = new URL(link).host;
-                    } catch {
-                        displayLink = link;
-                    }
-
-                    results.push({
-                        title,
-                        link,
-                        snippet: snippet || 'No description available.',
-                        displayLink
-                    });
-                }
-            }
-        });
-
-        // Fallback to classic/mobile layout if no results found
-        if (results.length === 0) {
-            $("h3").each((index, element) => {
-                if (results.length >= totalWanted) return false;
-
-                const parentAnchor = $(element).closest("a");
-                if (parentAnchor.length > 0) {
-                    let link = parentAnchor.attr("href");
-                    const title = $(element).text().trim();
-
-                    if (link && title) {
-                        if (link.startsWith('/url?q=')) {
-                            try {
-                                const parsedUrl = new URL('https://www.google.com' + link);
-                                link = parsedUrl.searchParams.get('q') || link;
-                            } catch {}
-                        }
-
-                        if (link.startsWith('http')) {
-                            let snippet = '';
-                            let current = parentAnchor.parent();
-                            for (let depth = 0; depth < 3; depth++) {
-                                if (!current.length) break;
-                                const possibleSnippet = current.next().find(".BNeawe, .VwiC3b, .AP7goc, span").first();
-                                if (possibleSnippet.length > 0) {
-                                    snippet = possibleSnippet.text().trim();
-                                    if (snippet) break;
-                                }
-                                current = current.parent();
-                            }
-
-                            let displayLink = '';
-                            try {
-                                displayLink = new URL(link).host;
-                            } catch {
-                                displayLink = link;
-                            }
-
-                            results.push({
-                                title,
-                                link,
-                                snippet: snippet || 'No description available.',
-                                displayLink
-                            });
-                        }
-                    }
-                }
-            });
-        }
-    } catch (err) {
-        console.error('Google search scraping failed:', err.message);
+        items = await searchGoogle(query, totalWanted, pageOffset);
+    } catch (e) {
+        // Continue to Bing
     }
 
-    // 2. Fallback to Yahoo Search Scraping if Google returned no results
-    if (results.length === 0) {
+    // 2. Try Bing (high speed, accurate, rich snippets)
+    if (!items || items.length === 0) {
         try {
-            const response = await axios.get("https://search.yahoo.com/search", {
-                params: {
-                    p: q,
-                    b: pageOffset + 1
-                },
-                headers: {
-                    "User-Agent": userAgent,
-                    "Accept-Language": "en-US,en;q=0.9"
-                },
-                timeout: 10000
-            });
-
-            const $ = cheerio.load(response.data);
-
-            $(".algo").each((index, element) => {
-                if (results.length >= totalWanted) return false;
-
-                const h3 = $(element).find("h3");
-                const titleElem = h3.find("a").length > 0 ? h3.find("a").first() : $(element).find("a").first();
-
-                let title = h3.text().trim().replace(/\s+/g, ' ');
-                let link = titleElem.attr("href");
-                const snippetElem = $(element).find(".compText, .compText p, p").first();
-                const snippet = snippetElem.text().trim().replace(/\s+/g, ' ');
-
-                if (title && link) {
-                    const ruMatch = link.match(/\/RU=([^/]+)/);
-                    if (ruMatch) {
-                        link = decodeURIComponent(ruMatch[1]);
-                    }
-
-                    if (link.startsWith('http')) {
-                        let displayLink = '';
-                        try {
-                            displayLink = new URL(link).host;
-                        } catch {
-                            displayLink = link;
-                        }
-
-                        results.push({
-                            title,
-                            link,
-                            snippet: snippet || 'No description available.',
-                            displayLink
-                        });
-                    }
-                }
-            });
-        } catch (err) {
-            console.error('Yahoo fallback search scraping failed:', err.message);
+            items = await searchBing(query, totalWanted, pageOffset);
+        } catch (e) {
+            console.error('Bing search failed:', e.message);
         }
     }
 
-    // 3. Fallback to DuckDuckGo Lite Scraping if Yahoo returned no results
-    if (results.length === 0) {
+    // 3. Fallback to Wikipedia if no items found
+    if (!items || items.length === 0) {
         try {
-            const response = await axios.post("https://lite.duckduckgo.com/lite/", `q=${encodeURIComponent(q)}&s=${pageOffset}`, {
-                headers: {
-                    "Content-Type": "application/x-www-form-urlencoded",
-                    "User-Agent": userAgent,
-                    "Accept-Language": "en-US,en;q=0.9"
-                },
-                timeout: 10000
-            });
-
-            const $ = cheerio.load(response.data);
-
-            $("tr").each((index, element) => {
-                if (results.length >= totalWanted) return false;
-
-                const titleElem = $(element).find(".result-link");
-                if (titleElem.length > 0) {
-                    let title = titleElem.text().trim().replace(/\s+/g, ' ');
-                    let link = titleElem.attr("href");
-
-                    if (link && link.startsWith('/l/?uddg=')) {
-                         try {
-                             const parsed = new URL('https://lite.duckduckgo.com' + link);
-                             link = decodeURIComponent(parsed.searchParams.get('uddg'));
-                         } catch {}
-                    }
-
-                    if (title && link && link.startsWith('http')) {
-                        let displayLink = '';
-                        try {
-                            displayLink = new URL(link).host;
-                        } catch {
-                            displayLink = link;
-                        }
-
-                        results.push({
-                            title,
-                            link,
-                            snippet: 'No description available.',
-                            displayLink
-                        });
-                    }
-                }
-
-                const snippetElem = $(element).find(".result-snippet");
-                if (snippetElem.length > 0 && results.length > 0) {
-                    results[results.length - 1].snippet = snippetElem.text().trim().replace(/\s+/g, ' ');
-                }
-            });
-        } catch (err) {
-            console.error('DuckDuckGo fallback search scraping failed:', err.message);
+            items = await searchWikipedia(query, totalWanted);
+        } catch (e) {
+            console.error('Wikipedia search fallback failed:', e.message);
         }
     }
 
     await canConsumeQuota(1);
 
-    return { items: results };
-}
-
-async function fetchOgImage(url) {
-    try {
-        const res = await axios.get(url, { timeout: 4000, responseType: 'text', maxContentLength: 100000 });
-        const html = res.data;
-        const m = html.match(/<meta[^>]+property=["']og:image["'][^>]*content=["']([^"']+)["']/i)
-            || html.match(/<meta[^>]+name=["']twitter:image["'][^>]*content=["']([^"']+)["']/i);
-        return m ? m[1] : null;
-    } catch {
-        return null;
-    }
+    return { items: items || [] };
 }
 
 function faviconFor(domainOrHost) {
@@ -336,32 +255,35 @@ function faviconFor(domainOrHost) {
     return `https://www.google.com/s2/favicons?sz=64&domain=${encodeURIComponent(domainOrHost)}`;
 }
 
-function makeEmbedForResult(item) {
+function makeEmbedForResult(item, index, total) {
     const title = item.title || item.displayLink || 'Result';
-    const desc = item.snippet || '';
+    const desc = item.snippet || 'No description available.';
     const link = item.link || '';
     const display = item.displayLink || (() => {
-        try { return new URL(link).host; } catch { return 'site'; }
+        try { return new URL(link).host; } catch { return 'web'; }
     })();
     const image = item.pagemap?.cse_image?.[0]?.src || item.pagemap?.metatags?.[0]?.['og:image'] || null;
+
     const embed = new EmbedBuilder()
-        .setTitle(title)
-        .setURL(link)
-        .setDescription(desc)
+        .setTitle(title.length > 256 ? title.slice(0, 253) + '...' : title)
+        .setURL(link.length <= 512 ? link : null)
+        .setDescription(desc.length > 4096 ? desc.slice(0, 4093) + '...' : desc)
         .setAuthor({ name: display, iconURL: faviconFor(display) })
-        .setColor(0x2f3136);
-    if (image) embed.setThumbnail(image);
+        .setColor(0xFBE7BD)
+        .setFooter({ text: `Result ${index + 1} of ${total}` });
+
+    if (image && image.startsWith('http')) {
+        embed.setThumbnail(image);
+    }
     return embed;
 }
-
-const TotalWanted = 5;
 
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('search')
         .setIntegrationTypes([0, 1])
         .setContexts([0, 1, 2])
-        .setDescription('Look something up on google')
+        .setDescription('Look something up on the web')
         .addStringOption(opt => opt.setName('query').setDescription('Search query').setRequired(true)),
 
     async execute(interaction) {
@@ -376,7 +298,7 @@ module.exports = {
         }
 
         try {
-            const result = await googleSearch(query, TotalWanted);
+            const result = await performSearch(query, 10, 0);
             if (result.error === 'QUOTA_EXCEEDED') {
                 const msLeft = Math.max(0, result.quota.resetAt - Date.now());
                 await interaction.editReply(`Bot can't do searches for today anymore, try again in ${formatCountdown(msLeft)}`);
@@ -384,99 +306,74 @@ module.exports = {
             }
             let items = result.items || [];
             if (!items.length) {
-                await interaction.editReply('No results found');
+                await interaction.editReply(`No results found for "${query}"`);
                 return;
             }
 
             let index = 0;
-            let pageOffset = 0;
-            let embeds = items.map(makeEmbedForResult);
+            const getSafeUrl = (link) => (!link || link.length > 512) ? 'https://www.bing.com' : link;
 
-            const getSafeUrl = (link) => (!link || link.length > 512) ? 'https://google.com' : link;
+            const updateEmbeds = () => items.map((item, idx) => makeEmbedForResult(item, idx, items.length));
+            let embeds = updateEmbeds();
 
-            const openButton = new ButtonBuilder()
-                .setLabel('Open')
-                .setStyle(ButtonStyle.Link)
-                .setURL(getSafeUrl(items[index].link || items[index].formattedUrl));
+            const createButtons = (currentIndex) => {
+                const openButton = new ButtonBuilder()
+                    .setLabel('Open')
+                    .setStyle(ButtonStyle.Link)
+                    .setURL(getSafeUrl(items[currentIndex].link));
 
-            const prev = new ButtonBuilder()
-                .setCustomId('search_prev')
-                .setLabel('◀ Prev')
-                .setStyle(ButtonStyle.Primary)
-                .setDisabled(true);
+                const prev = new ButtonBuilder()
+                    .setCustomId('search_prev')
+                    .setLabel('◀ Prev')
+                    .setStyle(ButtonStyle.Primary)
+                    .setDisabled(currentIndex === 0);
 
-            const next = new ButtonBuilder()
-                .setCustomId('search_next')
-                .setLabel('Next ▶')
-                .setStyle(ButtonStyle.Primary)
-                .setDisabled(items.length <= 1);
+                const next = new ButtonBuilder()
+                    .setCustomId('search_next')
+                    .setLabel('Next ▶')
+                    .setStyle(ButtonStyle.Primary)
+                    .setDisabled(currentIndex >= items.length - 1);
 
-            const navRow = new ActionRowBuilder().addComponents(prev, next, openButton);
+                return new ActionRowBuilder().addComponents(prev, next, openButton);
+            };
 
-            const message = await interaction.editReply({ embeds: [embeds[index]], components: [navRow] });
+            const message = await interaction.editReply({
+                embeds: [embeds[index]],
+                components: [createButtons(index)]
+            });
 
-            const collector = message.createMessageComponentCollector({ time: 120_000 });
+            const collector = message.createMessageComponentCollector({ time: 180_000 });
 
             collector.on('collect', async i => {
                 if (i.user.id !== interaction.user.id) {
                     await i.reply({ content: 'You didn\'t run this command', flags: MessageFlags.Ephemeral });
                     return;
                 }
+
                 if (i.customId === 'search_prev') {
                     if (index > 0) index--;
                 } else if (i.customId === 'search_next') {
-                    if (index < embeds.length - 1) {
+                    if (index < items.length - 1) {
                         index++;
-                    }
-
-                    // Scrape another 5 results once user reads 3, 8, 13 etc (index % 5 === 3)
-                    if (index % 5 === 3) {
-                        pageOffset += 5;
-                        try {
-                            const newResults = await googleSearch(query, 5, pageOffset);
-                            if (newResults.items && newResults.items.length > 0) {
-                                items.push(...newResults.items);
-                                embeds.push(...newResults.items.map(makeEmbedForResult));
-                            }
-                        } catch (err) {
-                            console.error('Asynchronous pagination search failed:', err.message);
-                        }
-                    }
-
-                    // Discard first 5 results when reaching index 15 to keep sliding window of max 15
-                    if (index >= 15) {
-                        items = items.slice(5);
-                        embeds = embeds.slice(5);
-                        index -= 5;
                     }
                 } else {
                     await i.deferUpdate().catch(() => {});
                     return;
                 }
 
-                let embed = embeds[index];
-                if ((!embed.thumbnail || !embed.thumbnail.url) && items[index].link) {
-                    const og = await fetchOgImage(items[index].link);
-                    if (og) {
-                        embed = EmbedBuilder.from(embed).setThumbnail(og);
-                        embeds[index] = embed;
-                    }
-                }
-
-                const openBtn = ButtonBuilder.from(openButton).setURL(getSafeUrl(items[index].link));
-                const prevBtn = ButtonBuilder.from(prev).setDisabled(index === 0);
-                const nextBtn = ButtonBuilder.from(next).setDisabled(index === embeds.length - 1);
-                const row = new ActionRowBuilder().addComponents(prevBtn, nextBtn, openBtn);
-
-                await i.update({ embeds: [embed], components: [row] });
+                await i.update({
+                    embeds: [embeds[index]],
+                    components: [createButtons(index)]
+                }).catch(() => {});
             });
 
             collector.on('end', () => {
-                const prevBtn = ButtonBuilder.from(prev).setDisabled(true);
-                const nextBtn = ButtonBuilder.from(next).setDisabled(true);
-                const openBtn = ButtonBuilder.from(openButton).setURL(getSafeUrl(items[index].link));
-                const row = new ActionRowBuilder().addComponents(prevBtn, nextBtn, openBtn);
-                message.edit({ components: [row] }).catch(() => {});
+                const disabledRow = new ActionRowBuilder().addComponents(
+                    new ButtonBuilder().setCustomId('search_prev').setLabel('◀ Prev').setStyle(ButtonStyle.Primary).setDisabled(true),
+                    new ButtonBuilder().setCustomId('search_next').setLabel('Next ▶').setStyle(ButtonStyle.Primary).setDisabled(true),
+                    new ButtonBuilder().setLabel('Open').setStyle(ButtonStyle.Link).setURL(getSafeUrl(items[index].link))
+                );
+                message.edit({ components: [disabledRow] }).catch(() => {});
             });
         } catch (err) {
             const status = err?.response?.status;

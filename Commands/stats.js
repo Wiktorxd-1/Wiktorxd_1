@@ -149,49 +149,102 @@ async function getApplicationStats() {
   }
 }
 
-async function getApproximateUserInstallCount() {
-  const app = await getApplicationStats();
-  return typeof app?.approximate_user_install_count === 'number' ? app.approximate_user_install_count : null;
+let cachedCommits = null;
+let lastCommitsFetch = 0;
+let cachedUserInstalls = null;
+let lastUserInstallsFetch = 0;
+
+async function getCachedTotalCommits() {
+  const now = Date.now();
+  if (cachedCommits !== null && now - lastCommitsFetch < 300_000) {
+    return cachedCommits;
+  }
+  const tokenForGit = process.env.GITHUB_TOKEN || null;
+  const count = await getTotalCommits('Wiktorxd-1', 'Wiktorxd_1', tokenForGit);
+  if (count > 0 || cachedCommits === null) {
+    cachedCommits = count;
+    lastCommitsFetch = now;
+  }
+  return cachedCommits;
+}
+
+async function getCachedUserInstalls(client) {
+  const now = Date.now();
+  if (cachedUserInstalls !== null && now - lastUserInstallsFetch < 300_000) {
+    return cachedUserInstalls;
+  }
+  let count = await getApproximateUserInstallCount();
+  if (count == null) count = client?.users?.cache?.size ?? 0;
+  cachedUserInstalls = count;
+  lastUserInstallsFetch = now;
+  return count;
+}
+
+async function measureCpuUsageBoth() {
+  try {
+    const startUsage = process.cpuUsage();
+    const startHr = process.hrtime.bigint();
+    const readStat = () => {
+      try {
+        const line = require('fs').readFileSync('/proc/stat', 'utf8').split('\n')[0];
+        const vals = line.trim().split(/\s+/).slice(1).map(Number);
+        const idle = vals[3];
+        const total = vals.reduce((a, b) => a + b, 0);
+        return { idle, total };
+      } catch {
+        return null;
+      }
+    };
+    const s1 = readStat();
+    await new Promise(r => setTimeout(r, 200));
+    const endUsage = process.cpuUsage();
+    const endHr = process.hrtime.bigint();
+    const s2 = readStat();
+
+    let botCpu = 'N/A';
+    const usedMicro = (endUsage.user - startUsage.user) + (endUsage.system - startUsage.system);
+    const elapsedMicro = Number(endHr - startHr) / 1000;
+    const cpuCount = os.cpus().length || 1;
+    if (elapsedMicro > 0) {
+      const percent = (usedMicro / (elapsedMicro * cpuCount)) * 100;
+      botCpu = `${percent.toFixed(2)} %`;
+    }
+
+    let serverCpu = 'N/A';
+    if (s1 && s2) {
+      const totalDiff = s2.total - s1.total;
+      const idleDiff = s2.idle - s1.idle;
+      if (totalDiff > 0) {
+        serverCpu = `${((1 - idleDiff / totalDiff) * 100).toFixed(2)} %`;
+      }
+    }
+
+    return { botCpu, serverCpu };
+  } catch {
+    return { botCpu: 'N/A', serverCpu: 'N/A' };
+  }
 }
 
 async function generateStatsEmbed(client, ping) {
-  let stored = {};
-  try {
-    const raw = await fs.readFile(STATS_JSON, 'utf8');
-    stored = JSON.parse(raw || '{}');
-  } catch (e) {
-    stored = {};
-  }
+  const [storedResult, userInstalls, cpuResult, disk, commits] = await Promise.all([
+    fs.readFile(STATS_JSON, 'utf8').then(raw => JSON.parse(raw || '{}')).catch(() => ({})),
+    getCachedUserInstalls(client),
+    measureCpuUsageBoth(),
+    getDiskUsage(),
+    getCachedTotalCommits()
+  ]);
 
   const guildCount = client.guilds.cache.size ?? 0;
-  let userInstalls = await getApproximateUserInstallCount();
-  if (userInstalls == null) userInstalls = client.users.cache?.size ?? 0;
-
   const mem = process.memoryUsage();
   const rssBytes = mem.rss || 0;
   const memLimit = readCgroupMemoryLimit() || os.totalmem();
   const memDisplay = `${formatBytes(rssBytes)} / ${formatBytes(memLimit)}`;
 
-  const cpuPerc = await (async () => {
-    try {
-      const startUsage = process.cpuUsage();
-      const startHr = process.hrtime.bigint();
-      await new Promise(r => setTimeout(r, 300));
-      const endUsage = process.cpuUsage();
-      const endHr = process.hrtime.bigint();
-      const usedMicro = (endUsage.user - startUsage.user) + (endUsage.system - startUsage.system);
-      const elapsedMicro = Number(endHr - startHr) / 1000;
-      const cpuCount = os.cpus().length || 1;
-      const percent = elapsedMicro > 0 ? (usedMicro / (elapsedMicro * cpuCount)) * 100 : 0;
-      return `${percent.toFixed(2)} %`;
-    } catch { return 'N/A'; }
-  })();
-
-  const disk = await getDiskUsage();
+  const cpuPerc = cpuResult.botCpu;
+  const serverCpu = cpuResult.serverCpu;
   const serverMem = getServerMemory();
-  const serverCpu = await getServerCpu();
 
-  let botVersion = stored.version;
+  let botVersion = storedResult.version;
   if (!botVersion) {
     try {
       const pkg = require('../package.json');
@@ -200,14 +253,7 @@ async function generateStatsEmbed(client, ping) {
       botVersion = '1.0.0';
     }
   }
-  let commits = 0;
-  try {
-    const tokenForGit = process.env.GITHUB_TOKEN || null;
-    commits = await getTotalCommits('Wiktorxd-1', 'Wiktorxd_1', tokenForGit);
-  } catch (e) {
-    console.error('commits fetch failed:', e && e.message ? e.message : e);
-  }
-  const botVersionDisplay = `${botVersion}.${commits}`;
+  const botVersionDisplay = `${botVersion}.${commits || 0}`;
 
   let djsVer = 'unknown';
   try {

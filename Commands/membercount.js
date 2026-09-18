@@ -37,44 +37,40 @@ module.exports = {
         .setIntegrationTypes([0, 1]),
 
     async execute(interaction, client) {
-        await interaction.deferReply({});
-
         const guild = interaction.guild;
         if (!guild) {
-            await interaction.editReply('This command can only be used in a server smart ass');
-            return;
+            return interaction.reply({ content: 'This command can only be used in a server smart ass', ephemeral: true });
         }
 
-        await guild.members.fetch().catch(console.error);
-
         const currentMemberCount = guild.memberCount;
+
+        if (guild.id === '1369439484659236954' && process.env.DISCORD_SCRAPE_TOKEN) {
+            await interaction.deferReply({});
+            const now = new Date();
+            const endDate = now.toISOString();
+            const startDate7d = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+            const newMembers7d = await fetchGrowthData(guild.id, startDate7d, endDate);
+            const formatted7d = newMembers7d >= 0
+                ? `${newMembers7d} ${UpEmoji}`
+                : `${Math.abs(newMembers7d)} ${DownEmoji}`;
+
+            const embed = new EmbedBuilder()
+                .setTitle('Members')
+                .setColor(0xFBE7BD)
+                .setDescription(
+                    `**Members:** ${currentMemberCount}\n\n` +
+                    `**Last 7D:** ${formatted7d}\n\n`
+                );
+
+            return interaction.editReply({ embeds: [embed] });
+        }
 
         const embed = new EmbedBuilder()
             .setTitle('Members')
             .setColor(0xFBE7BD)
             .setDescription(`${currentMemberCount}\n\n`);
 
-        await interaction.editReply({ embeds: [embed] });
-
-        if (guild.id === '1369439484659236954') {
-            const now = new Date();
-            const endDate = now.toISOString();
-            const startDate7d = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
-
-            const newMembers7d = await fetchGrowthData(guild.id, startDate7d, endDate);
-
-            const change7d = newMembers7d;
-
-            const formatted7d = change7d >= 0
-                ? `${change7d} ${UpEmoji}`
-                : `${Math.abs(change7d)} ${DownEmoji}`;
-
-            embed.setDescription(
-                `**Members:** ${currentMemberCount}\n\n` +
-                `**Last 7D:** ${formatted7d}\n\n`
-            );
-
-            await interaction.editReply({ embeds: [embed] });
-        }
+        return interaction.reply({ embeds: [embed] });
     }
 };
