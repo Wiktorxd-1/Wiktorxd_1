@@ -71,6 +71,7 @@ web_modules/
 .env
 .env.*
 !.env.example
+.agents
 
 # parcel-bundler cache (https://parceljs.org/)
 .cache
@@ -143,3 +144,10 @@ vite.config.ts.timestamp-*
 
 migrate_secrets.js
 progress.txt
+
+# Test scripts & temp test files
+/tests/
+/test_scripts/
+test_*.js
+*.test.js
+temp_*.js
