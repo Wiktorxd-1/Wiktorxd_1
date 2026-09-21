@@ -97,60 +97,39 @@ function getRandomUA() {
     return UA_LIST[Math.floor(Math.random() * UA_LIST.length)];
 }
 
-// 1. Bing Search Provider
-async function searchBing(query, totalWanted = 10, pageOffset = 0) {
-    const firstIndex = pageOffset + 1;
-    const res = await axios.get('https://www.bing.com/search', {
-        params: {
-            q: query,
-            first: firstIndex,
-            setlang: 'en-US',
-            setmkt: 'en-US',
-            cc: 'US'
-        },
+// 1. DuckDuckGo Lite Search Provider (Highly accurate, no spam)
+async function searchDuckDuckGo(query, totalWanted = 10, pageOffset = 0) {
+    const res = await axios.post("https://lite.duckduckgo.com/lite/", `q=${encodeURIComponent(query)}&s=${pageOffset}&kp=-2`, {
         headers: {
-            'User-Agent': getRandomUA(),
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Referer': 'https://www.bing.com/'
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": getRandomUA()
         },
-        timeout: 7000
+        timeout: 10000
     });
-
     const $ = cheerio.load(res.data);
     const results = [];
-
-    $('li.b_algo').each((_, el) => {
+    $("tr").each((_, element) => {
         if (results.length >= totalWanted) return false;
-
-        const h2 = $(el).find('h2 a');
-        const title = h2.text().trim().replace(/\s+/g, ' ');
-        const rawHref = h2.attr('href');
-        if (!title || !rawHref) return;
-
-        const link = decodeBingUrl(rawHref);
-        if (!link || !link.startsWith('http')) return;
-
-        let displayLink = '';
-        try {
-            displayLink = new URL(link).host;
-        } catch {
-            displayLink = link;
+        const titleElem = $(element).find(".result-link");
+        if (titleElem.length > 0) {
+            let link = titleElem.attr("href");
+            if (link && link.startsWith('/l/?uddg=')) {
+                 try {
+                     link = decodeURIComponent(new URL('https://lite.duckduckgo.com' + link).searchParams.get('uddg'));
+                 } catch {}
+            }
+            results.push({
+                title: titleElem.text().trim(),
+                link: link,
+                snippet: 'No description available.',
+                displayLink: (() => { try { return new URL(link).host; } catch { return link; } })()
+            });
         }
-
-        let snippet = $(el).find('.b_caption p, .b_algoSlug, .b_lineclamp2, .b_lineclamp3, .b_lineclamp4, .b_snippet').text().trim().replace(/\s+/g, ' ');
-        if (!snippet) {
-            snippet = $(el).find('p').first().text().trim().replace(/\s+/g, ' ');
+        const snippetElem = $(element).find(".result-snippet");
+        if (snippetElem.length > 0 && results.length > 0) {
+            results[results.length - 1].snippet = snippetElem.text().trim().replace(/\s+/g, ' ');
         }
-
-        results.push({
-            title,
-            link,
-            snippet: snippet || 'No description available.',
-            displayLink
-        });
     });
-
     return results;
 }
 
@@ -158,7 +137,7 @@ async function searchBing(query, totalWanted = 10, pageOffset = 0) {
 async function searchGoogle(query, totalWanted = 10, pageOffset = 0) {
     const cfg = await loadGoogleConfig();
     const apiKey = cfg.apiKey || process.env.GOOGLE_SEARCH_API_KEY || process.env.GOOGLE_API_KEY;
-    const cseId = cfg.cx || cfg.cseId || process.env.GOOGLE_CSE_ID || process.env.GOOGLE_SEARCH_ENGINE_ID;
+    const cseId = cfg.cx || cfg.cseId || process.env.GOOGLE_CSE_ID || process.env.GOOGLE_SEARCH_ENGINE_ID || process.env.GOOGLE_CX;
 
     if (apiKey && cseId) {
         const res = await axios.get('https://www.googleapis.com/customsearch/v1', {
@@ -167,7 +146,8 @@ async function searchGoogle(query, totalWanted = 10, pageOffset = 0) {
                 cx: cseId,
                 q: query,
                 start: pageOffset + 1,
-                num: Math.min(10, totalWanted)
+                num: Math.min(10, totalWanted),
+                safe: 'off'
             },
             timeout: 6000
         });
@@ -224,15 +204,15 @@ async function performSearch(query, totalWanted = 10, pageOffset = 0) {
     try {
         items = await searchGoogle(query, totalWanted, pageOffset);
     } catch (e) {
-        // Continue to Bing
+        // Continue to DDG
     }
 
-    // 2. Try Bing (high speed, accurate, rich snippets)
+    // 2. Try DuckDuckGo Lite (accurate, no spam)
     if (!items || items.length === 0) {
         try {
-            items = await searchBing(query, totalWanted, pageOffset);
+            items = await searchDuckDuckGo(query, totalWanted, pageOffset);
         } catch (e) {
-            console.error('Bing search failed:', e.message);
+            console.error('DuckDuckGo search failed:', e.message);
         }
     }
 
