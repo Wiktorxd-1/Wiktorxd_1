@@ -129,10 +129,11 @@ async function checkBgsiUpdates(discordClient = null) {
     }
 
     if (lastStoredUpdateTime === null || lastStoredUpdateTime.getTime() < newUpdateTime.getTime()) {
+        const gameIcon = await fetchGameImageUrl(6504986360);
         const embed = {
             title: `${gameDataBgsi.name || 'Unknown Game'} Update`,
             color: parseInt('ffcb8d', 16),
-            image: (await fetchGameImageUrl(6504986360)) ? { url: await fetchGameImageUrl(6504986360) } : undefined,
+            image: gameIcon ? { url: gameIcon } : undefined,
             fields: [
                 { name: "⌛ Last Update", value: formatRelativeTime(updatedTimeString), inline: false },
                 { name: "📅 Date", value: formatUpdateTime(updatedTimeString), inline: false },

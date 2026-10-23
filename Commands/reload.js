@@ -63,7 +63,7 @@ module.exports = {
         }
 
         const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-        const ClientId = process.env.CLIENT_ID;
+        const ClientId = process.env.CLIENT_ID || process.env.DISCORD_CLIENT_ID || client.user.id;
 
         try {
             await rest.put(

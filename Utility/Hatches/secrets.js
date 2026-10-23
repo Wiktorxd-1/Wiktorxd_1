@@ -887,12 +887,12 @@ async function startSecretsWatcher(discordClient) {
     await ensureCacheIsFresh();
 
     try {
-        const sendingChannel = await discordClient.channels.fetch('1383484997318480013', { force: true });
+        const sendingChannel = await discordClient.channels.fetch('1383484997318480013').catch(() => null);
         if (!sendingChannel || !sendingChannel.guild) {
-            throw new Error("Could not fetch sending channel or its guild. Ensure channel ID is correct and bot has VIEW_CHANNEL permissions.");
+            console.warn("[Secrets] Could not fetch sending channel 1383484997318480013 or its guild. Bot will retry on messages.");
         }
     } catch (e) {
-        process.exit(1);
+        console.warn("[Secrets] Failed to fetch sending channel:", e.message);
     }
 
     // Wait until selfbot is ready before initiating catch-up and event binding
@@ -998,7 +998,7 @@ module.exports.searchSecretsDB = async function(discordId, robloxUsername) {
         for (let row of rows) {
             // Reconstruct ISO timestamp as done by iterateAllEntries
             if (row.timestamp) {
-                row.timestamp = new Date(row.timestamp).toISOString().replace(/\\.\\d{3}Z$/, '');
+                row.timestamp = new Date(row.timestamp).toISOString().replace(/\.\d{3}Z$/, '');
             }
             if (!row.imageUrl) {
                 if (nameToImage.has(row.name)) {

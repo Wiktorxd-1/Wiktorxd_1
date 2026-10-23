@@ -2,12 +2,12 @@ const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const fs = require('fs').promises;
 const path = require('path');
 const axios = require('axios');
-const { execFile } = require('child_process');
+const { execFile, execSync } = require('child_process');
 const os = require('os');
 require('dotenv').config();
 
 const STATS_JSON = path.join(__dirname, '../Data/stats.json');
-const AppId = process.env.DISCORD_CLIENT_ID || '1235222783592497232';
+const AppId = process.env.DISCORD_CLIENT_ID || process.env.CLIENT_ID || '1235222783592497232';
 const token = process.env.DISCORD_TOKEN || process.env.BOT_TOKEN || process.env.TOKEN || process.env.token || null;
 
 function formatBytes(bytes) {
@@ -38,7 +38,23 @@ function readCgroupMemoryLimit() {
   return null;
 }
 
-function getDiskUsage() {
+async function getDiskUsage() {
+  try {
+    if (typeof fs.statfs === 'function') {
+      const stats = await fs.statfs(process.cwd());
+      const bsize = stats.bsize || 4096;
+      const totalBytes = Number(stats.blocks) * bsize;
+      const freeBytes = Number(stats.bavail) * bsize;
+      const usedBytes = Math.max(0, totalBytes - freeBytes);
+      const usePerc = totalBytes > 0 ? `${((usedBytes / totalBytes) * 100).toFixed(1)}%` : 'N/A';
+      return {
+        used: formatBytes(usedBytes),
+        size: formatBytes(totalBytes),
+        usePerc
+      };
+    }
+  } catch {}
+
   return new Promise(resolve => {
     execFile('df', ['-h', process.cwd()], { timeout: 2000 }, (err, stdout) => {
       if (err || !stdout) return resolve({ used: 'N/A', size: 'N/A', usePerc: 'N/A' });
@@ -62,28 +78,16 @@ function getServerMemory() {
     };
     const total = get('MemTotal');
     const available = get('MemAvailable');
-    if (!total || !available) return null;
-    return { used: total - available, total };
-  } catch { return null; }
-}
+    if (total && available) return { used: total - available, total };
+  } catch {}
 
-async function getServerCpu() {
   try {
-    const readStat = () => {
-      const line = require('fs').readFileSync('/proc/stat', 'utf8').split('\n')[0];
-      const vals = line.trim().split(/\s+/).slice(1).map(Number);
-      const idle = vals[3];
-      const total = vals.reduce((a, b) => a + b, 0);
-      return { idle, total };
-    };
-    const s1 = readStat();
-    await new Promise(r => setTimeout(r, 300));
-    const s2 = readStat();
-    const totalDiff = s2.total - s1.total;
-    const idleDiff = s2.idle - s1.idle;
-    if (totalDiff <= 0) return 'N/A';
-    return `${((1 - idleDiff / totalDiff) * 100).toFixed(2)} %`;
-  } catch { return 'N/A'; }
+    const total = os.totalmem();
+    const free = os.freemem();
+    if (total > 0) return { used: Math.max(0, total - free), total };
+  } catch {}
+
+  return null;
 }
 
 async function getTotalCommits(repoOwner, repoName, githubToken) {
@@ -95,9 +99,8 @@ async function getTotalCommits(repoOwner, repoName, githubToken) {
   };
 
   try {
-    const repoRes = await axios.get(urlBase, { headers, validateStatus: s => s >= 200 && s < 500, timeout: 5000 });
+    const repoRes = await axios.get(urlBase, { headers, validateStatus: s => s >= 200 && s < 500, timeout: 4000 });
     if (!repoRes || repoRes.status >= 400) {
-      console.error('getTotalCommits: repo check failed', repoRes && repoRes.status, repoRes && repoRes.data && repoRes.data.message);
       return 0;
     }
 
@@ -106,11 +109,10 @@ async function getTotalCommits(repoOwner, repoName, githubToken) {
       headers,
       params: { per_page: 1, sha: repoRes.data.default_branch || 'main' },
       validateStatus: s => s >= 200 && s < 500,
-      timeout: 5000
+      timeout: 4000
     });
 
     if (!res || res.status >= 400) {
-      console.error('getTotalCommits: commits request failed', res && res.status, res && res.data && res.data.message);
       return 0;
     }
 
@@ -123,28 +125,57 @@ async function getTotalCommits(repoOwner, repoName, githubToken) {
     const commits = Array.isArray(res.data) ? res.data : [];
     return commits.length;
   } catch (err) {
-    console.error('getTotalCommits error:', err && err.message ? err.message : err);
     return 0;
   }
 }
 
-async function getApplicationStats() {
-  if (!token || !AppId) {
-    console.warn('getApplicationStats: missing token or AppId');
+let cachedAppStats = null;
+let lastAppStatsFetch = 0;
+
+async function getApplicationStats(client) {
+  const now = Date.now();
+  if (cachedAppStats !== null && now - lastAppStatsFetch < 300_000) {
+    return cachedAppStats;
+  }
+  const botToken = token || client?.token;
+  if (!botToken) {
     return null;
   }
+
   try {
     const res = await axios.get(
-      `https://discord.com/api/v10/applications/${AppId}`,
-      { headers: { Authorization: `Bot ${token}` }, timeout: 5000, validateStatus: s => s >= 200 && s < 500 }
+      'https://discord.com/api/v10/applications/@me',
+      { headers: { Authorization: `Bot ${botToken}` }, timeout: 4000, validateStatus: s => s >= 200 && s < 500 }
     );
-    if (!res || res.status >= 400) {
-      console.error('getApplicationStats: non-200', res && res.status, res && res.data);
-      return null;
+    if (res && res.status === 200 && res.data) {
+      cachedAppStats = res.data;
+      lastAppStatsFetch = now;
+      return cachedAppStats;
     }
-    return res.data;
-  } catch (error) {
-    console.error('Error fetching application stats:', error && error.message ? error.message : error);
+  } catch {}
+
+  if (AppId) {
+    try {
+      const res = await axios.get(
+        `https://discord.com/api/v10/applications/${AppId}`,
+        { headers: { Authorization: `Bot ${botToken}` }, timeout: 4000, validateStatus: s => s >= 200 && s < 500 }
+      );
+      if (res && res.status === 200 && res.data) {
+        cachedAppStats = res.data;
+        lastAppStatsFetch = now;
+        return cachedAppStats;
+      }
+    } catch {}
+  }
+
+  return cachedAppStats;
+}
+
+async function getApproximateUserInstallCount(client) {
+  try {
+    const app = await getApplicationStats(client);
+    return typeof app?.approximate_user_install_count === 'number' ? app.approximate_user_install_count : null;
+  } catch {
     return null;
   }
 }
@@ -159,13 +190,27 @@ async function getCachedTotalCommits() {
   if (cachedCommits !== null && now - lastCommitsFetch < 300_000) {
     return cachedCommits;
   }
-  const tokenForGit = process.env.GITHUB_TOKEN || null;
-  const count = await getTotalCommits('Wiktorxd-1', 'Wiktorxd_1', tokenForGit);
-  if (count > 0 || cachedCommits === null) {
-    cachedCommits = count;
-    lastCommitsFetch = now;
-  }
-  return cachedCommits;
+
+  try {
+    const stdout = execSync('git rev-list --count HEAD', { timeout: 1500, encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] });
+    const localCount = parseInt(stdout.trim(), 10);
+    if (!isNaN(localCount) && localCount > 0) {
+      cachedCommits = localCount;
+      lastCommitsFetch = now;
+      return cachedCommits;
+    }
+  } catch {}
+
+  try {
+    const tokenForGit = process.env.GITHUB_TOKEN || null;
+    const count = await getTotalCommits('Wiktorxd-1', 'Wiktorxd_1', tokenForGit);
+    if (count > 0 || cachedCommits === null) {
+      cachedCommits = count;
+      lastCommitsFetch = now;
+    }
+  } catch {}
+
+  return cachedCommits || 0;
 }
 
 async function getCachedUserInstalls(client) {
@@ -173,8 +218,13 @@ async function getCachedUserInstalls(client) {
   if (cachedUserInstalls !== null && now - lastUserInstallsFetch < 300_000) {
     return cachedUserInstalls;
   }
-  let count = await getApproximateUserInstallCount();
-  if (count == null) count = client?.users?.cache?.size ?? 0;
+  let count = null;
+  try {
+    count = await getApproximateUserInstallCount(client);
+  } catch {}
+  if (count == null) {
+    count = client?.users?.cache?.size ?? 0;
+  }
   cachedUserInstalls = count;
   lastUserInstallsFetch = now;
   return count;
@@ -184,6 +234,8 @@ async function measureCpuUsageBoth() {
   try {
     const startUsage = process.cpuUsage();
     const startHr = process.hrtime.bigint();
+    const startCpus = os.cpus();
+
     const readStat = () => {
       try {
         const line = require('fs').readFileSync('/proc/stat', 'utf8').split('\n')[0];
@@ -200,6 +252,7 @@ async function measureCpuUsageBoth() {
     const endUsage = process.cpuUsage();
     const endHr = process.hrtime.bigint();
     const s2 = readStat();
+    const endCpus = os.cpus();
 
     let botCpu = 'N/A';
     const usedMicro = (endUsage.user - startUsage.user) + (endUsage.system - startUsage.system);
@@ -217,6 +270,20 @@ async function measureCpuUsageBoth() {
       if (totalDiff > 0) {
         serverCpu = `${((1 - idleDiff / totalDiff) * 100).toFixed(2)} %`;
       }
+    } else if (startCpus && endCpus && startCpus.length === endCpus.length) {
+      let totalDiff = 0;
+      let idleDiff = 0;
+      for (let i = 0; i < startCpus.length; i++) {
+        const c1 = startCpus[i].times;
+        const c2 = endCpus[i].times;
+        const t1 = c1.user + c1.nice + c1.sys + c1.idle + c1.irq;
+        const t2 = c2.user + c2.nice + c2.sys + c2.idle + c2.irq;
+        totalDiff += (t2 - t1);
+        idleDiff += (c2.idle - c1.idle);
+      }
+      if (totalDiff > 0) {
+        serverCpu = `${((1 - idleDiff / totalDiff) * 100).toFixed(2)} %`;
+      }
     }
 
     return { botCpu, serverCpu };
@@ -228,13 +295,13 @@ async function measureCpuUsageBoth() {
 async function generateStatsEmbed(client, ping) {
   const [storedResult, userInstalls, cpuResult, disk, commits] = await Promise.all([
     fs.readFile(STATS_JSON, 'utf8').then(raw => JSON.parse(raw || '{}')).catch(() => ({})),
-    getCachedUserInstalls(client),
-    measureCpuUsageBoth(),
-    getDiskUsage(),
-    getCachedTotalCommits()
+    getCachedUserInstalls(client).catch(() => client?.users?.cache?.size ?? 0),
+    measureCpuUsageBoth().catch(() => ({ botCpu: 'N/A', serverCpu: 'N/A' })),
+    getDiskUsage().catch(() => ({ used: 'N/A', size: 'N/A', usePerc: 'N/A' })),
+    getCachedTotalCommits().catch(() => 0)
   ]);
 
-  const guildCount = client.guilds.cache.size ?? 0;
+  const guildCount = client?.guilds?.cache?.size ?? 0;
   const mem = process.memoryUsage();
   const rssBytes = mem.rss || 0;
   const memLimit = readCgroupMemoryLimit() || os.totalmem();
@@ -264,7 +331,7 @@ async function generateStatsEmbed(client, ping) {
   }
   const nodeVer = process.version;
 
-  const serverMemDisplay = serverMem
+  const serverMemDisplay = serverMem && serverMem.total > 0
     ? `${formatBytes(serverMem.used)} / ${formatBytes(serverMem.total)} (${((serverMem.used / serverMem.total) * 100).toFixed(1)}%)`
     : memDisplay;
 
@@ -302,7 +369,7 @@ module.exports = {
         const embed = await generateStatsEmbed(client, ping);
         await loadingMsg.edit({ content: null, embeds: [embed] });
       } catch (err) {
-        console.error(err);
+        console.error('Error executing stats prefix command:', err);
         await loadingMsg.edit('Failed to load stats.');
       }
     }
@@ -320,7 +387,7 @@ module.exports = {
       const embed = await generateStatsEmbed(client, ping);
       await interaction.editReply({ embeds: [embed] });
     } catch (err) {
-      console.error(err);
+      console.error('Error executing stats slash command:', err);
       await interaction.editReply('Failed to load stats.');
     }
   }
