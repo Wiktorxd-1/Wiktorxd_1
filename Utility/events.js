@@ -3,7 +3,7 @@ const path = require('path');
 const axios = require('axios');
 const { EmbedBuilder } = require('discord.js');
 
-const EventsFile = path.join(__dirname, 'Data', 'events.json');
+const EventsFile = path.join(__dirname, '../Data', 'events.json');
 
 const EventDefs = [
   { Name: 'Double Luck', Id: '2685862794', Icon: 'https://static.wikia.nocookie.net/bgs-infinity/images/1/1f/Gamepass_-_Double_Luck.png/revision/latest', Color: '#27cc69' },
@@ -79,37 +79,41 @@ async function pollEvents(client) {
   let newData = {};
   let hasChanges = false;
 
-  for (const def of EventDefs) {
-    try {
-      const url = `https://apis.roblox.com/developer-products/v1/developer-products/${def.Id}/details`;
-      const res = await axios.get(url, { timeout: 8000 });
-      const data = res.data;
-      const desc = data.DisplayDescription || data.Description || '';
-      const created = data.Created || '';
-      const updated = data.Updated || '';
+  const results = await Promise.all(
+    EventDefs.map(async (def) => {
+      try {
+        const url = `https://apis.roblox.com/developer-products/v1/developer-products/${def.Id}/details`;
+        const res = await axios.get(url, { timeout: 8000 });
+        const data = res.data;
+        const desc = data.DisplayDescription || data.Description || '';
+        const created = data.Created || '';
+        const updated = data.Updated || '';
 
-      if (!created) {
-        newData[def.Id] = prev[def.Id] || { timestamp: null, desc: '' };
-        continue;
+        if (!created) {
+          return { id: def.Id, data: prev[def.Id] || { timestamp: null, desc: '' }, changed: null, hasChanged: false };
+        }
+
+        const prevEntry = prev[def.Id];
+        if (prevEntry && prevEntry.updated === updated) {
+          return { id: def.Id, data: prevEntry, changed: null, hasChanged: false };
+        }
+
+        const timestamp = parseTimestamp(desc);
+        const entry = { timestamp, desc, created, updated };
+        const prevTs = prevEntry ? prevEntry.timestamp : null;
+        const changed = (!isFirstRun && timestamp && timestamp !== prevTs) ? { def, timestamp } : null;
+
+        return { id: def.Id, data: entry, changed, hasChanged: true };
+      } catch (e) {
+        return { id: def.Id, data: prev[def.Id] || { timestamp: null, desc: '' }, changed: null, hasChanged: false };
       }
+    })
+  );
 
-      const prevEntry = prev[def.Id];
-      if (prevEntry && prevEntry.updated === updated) {
-        newData[def.Id] = prevEntry;
-        continue;
-      }
-
-      const timestamp = parseTimestamp(desc);
-      newData[def.Id] = { timestamp, desc, created, updated };
-      hasChanges = true;
-
-      const prevTs = prevEntry ? prevEntry.timestamp : null;
-      if (!isFirstRun && timestamp && timestamp !== prevTs) {
-        changedEvents.push({ def, timestamp });
-      }
-    } catch (e) {
-      newData[def.Id] = prev[def.Id] || { timestamp: null, desc: '' };
-    }
+  for (const r of results) {
+    newData[r.id] = r.data;
+    if (r.hasChanged) hasChanges = true;
+    if (r.changed) changedEvents.push(r.changed);
   }
 
   if (hasChanges) await writeEventsFile(newData);

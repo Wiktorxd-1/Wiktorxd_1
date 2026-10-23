@@ -39,7 +39,7 @@ function startUptimeUpdater(client, getStartTime) {
             } catch (e) {
                 console.error(`Error updating presence: ${e.message}`);
             }
-            await new Promise(res => setTimeout(res, 3000));
+            await new Promise(res => setTimeout(res, 20000));
         }
     }
     updateLoop();
