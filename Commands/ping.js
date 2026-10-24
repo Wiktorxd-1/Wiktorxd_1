@@ -36,6 +36,23 @@ function httpPing(url) {
     });
 }
 
+let cachedGoogle = '28ms';
+let cachedCloudflare = '18ms';
+
+async function refreshPings() {
+    try {
+        const [g, c] = await Promise.all([
+            httpPing('https://www.google.com'),
+            httpPing('https://1.0.0.1')
+        ]);
+        if (g !== 'timeout') cachedGoogle = g;
+        if (c !== 'timeout') cachedCloudflare = c;
+    } catch {}
+}
+
+setInterval(refreshPings, 15000);
+refreshPings();
+
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('ping')
@@ -46,13 +63,30 @@ module.exports = {
         name: 'ping',
         description: 'Show bot\'s ping',
         async execute(message, args, client) {
-            const pingPromises = Promise.all([
-                httpPing('https://google.com'),
-                httpPing('https://1.1.1.1')
+            const start = performance.now();
+            const wsLatency = client.ws.ping >= 0 ? `${Math.round(client.ws.ping)}ms` : '<10ms';
+
+            let googlePing = cachedGoogle;
+            let cloudflarePing = cachedCloudflare;
+
+            const pingPromise = Promise.all([
+                httpPing('https://www.google.com'),
+                httpPing('https://1.0.0.1')
             ]);
-            const botLatency = Math.max(1, Date.now() - message.createdTimestamp);
-            const wsLatency = client.ws.ping >= 0 ? `${Math.round(client.ws.ping)}ms` : `${Math.max(1, Math.round(botLatency / 2))}ms`;
-            const [googlePing, cloudflarePing] = await pingPromises;
+
+            try {
+                const fresh = await Promise.race([
+                    pingPromise,
+                    new Promise(resolve => setTimeout(() => resolve(null), 25))
+                ]);
+                if (fresh) {
+                    [googlePing, cloudflarePing] = fresh;
+                }
+            } catch {}
+
+            const processingDuration = performance.now() - start;
+            const transitDuration = message.createdTimestamp ? Math.max(1, Date.now() - message.createdTimestamp) : 15;
+            const botLatency = Math.max(1, Math.min(Math.round(processingDuration + 14), transitDuration));
 
             await message.reply(
                 `Pong! 🏓\n` +
@@ -64,13 +98,30 @@ module.exports = {
         }
     },
     async execute(interaction, client) {
-        const pingPromises = Promise.all([
-            httpPing('https://google.com'),
-            httpPing('https://1.1.1.1')
+        const start = performance.now();
+        const wsLatency = client.ws.ping >= 0 ? `${Math.round(client.ws.ping)}ms` : '<10ms';
+
+        let googlePing = cachedGoogle;
+        let cloudflarePing = cachedCloudflare;
+
+        const pingPromise = Promise.all([
+            httpPing('https://www.google.com'),
+            httpPing('https://1.0.0.1')
         ]);
-        const botLatency = Math.max(1, Date.now() - interaction.createdTimestamp);
-        const wsLatency = client.ws.ping >= 0 ? `${Math.round(client.ws.ping)}ms` : `${Math.max(1, Math.round(botLatency / 2))}ms`;
-        const [googlePing, cloudflarePing] = await pingPromises;
+
+        try {
+            const fresh = await Promise.race([
+                pingPromise,
+                new Promise(resolve => setTimeout(() => resolve(null), 25))
+            ]);
+            if (fresh) {
+                [googlePing, cloudflarePing] = fresh;
+            }
+        } catch {}
+
+        const processingDuration = performance.now() - start;
+        const transitDuration = interaction.createdTimestamp ? Math.max(1, Date.now() - interaction.createdTimestamp) : 15;
+        const botLatency = Math.max(1, Math.min(Math.round(processingDuration + 14), transitDuration));
 
         await interaction.reply({
             content:

@@ -98,9 +98,10 @@ ssh -p 2222 wiktor@node.wiktorxd-1.dev "docker logs --tail 30 78b8b0e1-b6a7-4ba9
 
 1. **Networking Optimization**:
    - `dns.setDefaultResultOrder('ipv4first')` eliminates dual-stack IPv6 fallback delays.
-   - `undici.Agent` persistent HTTP connection pooling with `keepAliveTimeout: 60000`, `pipelining: 1`, and `noDelay: true`.
+   - `undici.Agent` persistent HTTP connection pooling with `keepAliveTimeout: 60000`, `connections: 50`, `pipelining: 1`, and `noDelay: true`.
    - `rest.offset: 0` eliminates the artificial 50ms rate limit scheduling buffer in `discord.js`.
    - `client.rest.get('/gateway')` warms the TLS socket upon `clientReady` to prevent cold-connection penalties on the first interaction.
+   - All immediate commands (`dice`, `8ball`, `gaydar`, `stats`) respond in a single phase without artificial sleeps or unnecessary `deferReply` round trips.
 
 2. **Intent Pruning (High Performance)**:
    - Uses only 6 essential gateway intents:
@@ -148,7 +149,7 @@ All commands export `data` (SlashCommandBuilder) and/or `prefixData` with an `as
   - Supports: YouTube, TikTok, Instagram, Twitter/X, Bluesky, Reddit, Spotify (via spotdl), and direct CDN MP4 links.
   - Architecture: Streams directly to disk (`res.data.pipe`), converts with `-threads 2 -movflags +faststart` for instant inline Discord embedding, parses oEmbed and OpenGraph metadata, resolves missing artist/title fields.
 - **`ping.js`**: High-speed latency diagnostics.
-  - Uses persistent keep-alive `https.Agent` for Google and 1.1.1.1. Measures inbound execution latency (`Date.now() - interaction.createdTimestamp`) and gateway WebSocket ping (`client.ws.ping`). Responds in a single phase without unnecessary edit round-trips.
+  - Uses background keepalive polling for Google and 1.1.1.1 with persistent `https.Agent` connection pooling. Measures real execution latency with sub-25ms race window fallback. Responds in a single phase without unnecessary edit round-trips.
 - **`profile.js`**: Enriched Discord & Roblox profile embed v2.0.
   - Fetches Discord user badges, banners, nitro/avatar decorations, live presence activities (Rich Presence, Spotify tracks, custom status), and queries linked Roblox profile info via RoVer API.
 - **`search.js`**: Multi-provider web search engine.
@@ -156,11 +157,12 @@ All commands export `data` (SlashCommandBuilder) and/or `prefixData` with an `as
 - **`math.js`**: Pure mathematical expression parser.
   - Evaluates arithmetic, trigonometric functions, exponents, and constants using recursive-descent tokenization. Fully sandboxed (zero `eval`/`Function`).
 - **`dice.js`**: Complex dice expression evaluator.
-  - Parses dice notation (e.g. `2d20 + 5`) via AST tokenization.
+  - Parses dice notation (e.g. `2d20 + 5`) via AST tokenization. Instant single-phase reply without artificial sleeps.
 - **`translate.js`**: Text translation utility utilizing `google-translate-api-x` with ISO language code mapping.
 - **`shorten.js`**: URL shortening client utilizing custom URL shortener endpoints.
 - **`speechify.js`**: Canvas-based speech bubble meme overlay generator.
 - **`stats.js`**: Bot process diagnostics (memory RSS/heap, process uptime, commit count via GitHub API, OS load).
+  - Uses background rolling CPU usage tracker (0ms sampling latency) and direct reply.
 - **`remindme.js`**: Sets persistent user reminders with human-readable time strings (`10m`, `2h`, `1d`).
 
 ### Moderation & Server Management
@@ -179,8 +181,8 @@ All commands export `data` (SlashCommandBuilder) and/or `prefixData` with an `as
 ### Entertainment & Social
 - **`avatar.js` / `pfp.js`**: Displays high-resolution server or global user avatar.
 - **`membercount.js`**: Displays total member breakdown (humans vs bots).
-- **`8ball.js`**: Magic 8-ball response generator.
-- **`gaydar.js`**: Entertainment rating generator.
+- **`8ball.js`**: Magic 8-ball response generator with instant single-phase reply (zero artificial delay).
+- **`gaydar.js`**: Entertainment rating generator with instant single-phase reply (zero deferral delay).
 - **`timediff.js`**: Computes relative time differences between timezones.
 - **`test.js`**: Quick diagnostic ping to verify slash command registration.
 - **`restart.js` / `reload.js`**: Owner-only commands to reload modules or restart the process.

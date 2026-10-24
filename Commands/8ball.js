@@ -49,20 +49,10 @@ module.exports = {
 
     async execute(interaction) {
         const question = interaction.options.getString('question').trim();
-        const thinking = '<a:roll:1389311247333458042> Thinking...';
-
-        await interaction.reply({ content: thinking });
-
-
-        await new Promise(r => setTimeout(r, 700));
-
         const category = pickCategory();
         const answers = Answers[category];
         const answer = answers[Math.floor(Math.random() * answers.length)];
-
-
         const final = `🎱 **Question:** ${question}\n**Answer:** ${answer}`;
-
-        await interaction.editReply({ content: final });
+        await interaction.reply({ content: final });
     }
 };

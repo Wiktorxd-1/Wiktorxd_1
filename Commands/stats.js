@@ -230,66 +230,59 @@ async function getCachedUserInstalls(client) {
   return count;
 }
 
-async function measureCpuUsageBoth() {
-  try {
-    const startUsage = process.cpuUsage();
-    const startHr = process.hrtime.bigint();
-    const startCpus = os.cpus();
+let cachedCpu = { botCpu: '0.00 %', serverCpu: '0.00 %' };
+let lastUsage = process.cpuUsage();
+let lastHr = process.hrtime.bigint();
+let lastStat = null;
 
-    const readStat = () => {
-      try {
-        const line = require('fs').readFileSync('/proc/stat', 'utf8').split('\n')[0];
-        const vals = line.trim().split(/\s+/).slice(1).map(Number);
-        const idle = vals[3];
-        const total = vals.reduce((a, b) => a + b, 0);
-        return { idle, total };
-      } catch {
-        return null;
-      }
-    };
-    const s1 = readStat();
-    await new Promise(r => setTimeout(r, 200));
+function readProcStat() {
+  try {
+    const line = require('fs').readFileSync('/proc/stat', 'utf8').split('\n')[0];
+    const vals = line.trim().split(/\s+/).slice(1).map(Number);
+    const idle = vals[3];
+    const total = vals.reduce((a, b) => a + b, 0);
+    return { idle, total };
+  } catch {
+    return null;
+  }
+}
+
+function updateCpuMetrics() {
+  try {
     const endUsage = process.cpuUsage();
     const endHr = process.hrtime.bigint();
-    const s2 = readStat();
-    const endCpus = os.cpus();
+    const currentStat = readProcStat();
 
-    let botCpu = 'N/A';
-    const usedMicro = (endUsage.user - startUsage.user) + (endUsage.system - startUsage.system);
-    const elapsedMicro = Number(endHr - startHr) / 1000;
+    const usedMicro = (endUsage.user - lastUsage.user) + (endUsage.system - lastUsage.system);
+    const elapsedMicro = Number(endHr - lastHr) / 1000;
     const cpuCount = os.cpus().length || 1;
+    let botCpu = '0.00 %';
     if (elapsedMicro > 0) {
       const percent = (usedMicro / (elapsedMicro * cpuCount)) * 100;
       botCpu = `${percent.toFixed(2)} %`;
     }
 
-    let serverCpu = 'N/A';
-    if (s1 && s2) {
-      const totalDiff = s2.total - s1.total;
-      const idleDiff = s2.idle - s1.idle;
-      if (totalDiff > 0) {
-        serverCpu = `${((1 - idleDiff / totalDiff) * 100).toFixed(2)} %`;
-      }
-    } else if (startCpus && endCpus && startCpus.length === endCpus.length) {
-      let totalDiff = 0;
-      let idleDiff = 0;
-      for (let i = 0; i < startCpus.length; i++) {
-        const c1 = startCpus[i].times;
-        const c2 = endCpus[i].times;
-        const t1 = c1.user + c1.nice + c1.sys + c1.idle + c1.irq;
-        const t2 = c2.user + c2.nice + c2.sys + c2.idle + c2.irq;
-        totalDiff += (t2 - t1);
-        idleDiff += (c2.idle - c1.idle);
-      }
+    let serverCpu = '0.00 %';
+    if (lastStat && currentStat) {
+      const totalDiff = currentStat.total - lastStat.total;
+      const idleDiff = currentStat.idle - lastStat.idle;
       if (totalDiff > 0) {
         serverCpu = `${((1 - idleDiff / totalDiff) * 100).toFixed(2)} %`;
       }
     }
 
-    return { botCpu, serverCpu };
-  } catch {
-    return { botCpu: 'N/A', serverCpu: 'N/A' };
-  }
+    cachedCpu = { botCpu, serverCpu };
+    lastUsage = endUsage;
+    lastHr = endHr;
+    lastStat = currentStat;
+  } catch {}
+}
+
+setInterval(updateCpuMetrics, 3000);
+updateCpuMetrics();
+
+async function measureCpuUsageBoth() {
+  return cachedCpu;
 }
 
 async function generateStatsEmbed(client, ping) {
@@ -376,7 +369,6 @@ module.exports = {
   },
 
   async execute(interaction, client) {
-    await interaction.deferReply();
     let ping = 0;
     if (client.ws && typeof client.ws.ping === 'number' && isFinite(client.ws.ping) && client.ws.ping >= 0) {
       ping = Math.round(client.ws.ping);
@@ -385,10 +377,16 @@ module.exports = {
     }
     try {
       const embed = await generateStatsEmbed(client, ping);
-      await interaction.editReply({ embeds: [embed] });
+      await interaction.reply({ embeds: [embed] });
     } catch (err) {
       console.error('Error executing stats slash command:', err);
-      await interaction.editReply('Failed to load stats.');
+      try {
+        if (interaction.replied || interaction.deferred) {
+          await interaction.followUp({ content: 'Failed to load stats.', flags: 64 });
+        } else {
+          await interaction.reply({ content: 'Failed to load stats.', flags: 64 });
+        }
+      } catch {}
     }
   }
 };

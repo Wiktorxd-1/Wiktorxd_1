@@ -80,8 +80,6 @@ module.exports = {
                 .setDescription('Highest')
                 .setRequired(false)),
     async execute(interaction) {
-        await interaction.reply({ content: '<a:roll:1389311247333458042> Rolling..' });
-
         let min = 1, max = 6;
         const MinLimit = BigInt('-1000000000');
         const MaxLimit = BigInt('1000000000');
@@ -99,12 +97,12 @@ module.exports = {
             max = clampBigInt(max, MinLimit, MaxLimit);
             if (min > max) [min, max] = [max, min];
         } catch (e) {
-            return interaction.editReply({ content: 'Wrong input' });
+            return interaction.reply({ content: 'Wrong input', flags: 64 });
         }
 
         const range = max - min + 1n;
         if (range <= 0n) {
-            return interaction.editReply({ content: 'Invalid range.' });
+            return interaction.reply({ content: 'Invalid range.', flags: 64 });
         }
 
         function randomBigInt(min, max) {
@@ -114,11 +112,8 @@ module.exports = {
         }
 
         const result = randomBigInt(min, max);
-
-        setTimeout(() => {
-            interaction.editReply({
-                content: `<:Dice:1389312575702831205> The number rolled is: **${result.toString()}**! <:Dice:1389312575702831205>`
-            });
-        }, 50);
+        await interaction.reply({
+            content: `<:Dice:1389312575702831205> The number rolled is: **${result.toString()}**! <:Dice:1389312575702831205>`
+        });
     }
 };

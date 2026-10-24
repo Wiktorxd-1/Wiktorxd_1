@@ -21,6 +21,7 @@ const restAgent = new Agent({
     keepAliveTimeout: 60000,
     keepAliveMaxTimeout: 300000,
     pipelining: 1,
+    connections: 50,
     connect: {
         keepAlive: true,
         keepAliveInitialDelay: 10000,
@@ -169,6 +170,7 @@ client.on('warn', info => {
 
 client.on('interactionCreate', async interaction => {
     if (interaction.isChatInputCommand()) {
+        interaction.receivedAt = Date.now();
         const isOwner = interaction.user.id === process.env.BOT_OWNER_ID;
         if (!isOwner) {
             const rl = checkRateLimit(interaction.user.id);

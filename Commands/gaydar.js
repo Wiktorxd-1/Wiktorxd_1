@@ -106,7 +106,7 @@ module.exports = {
               .setFooter({
                 text: "The bot has 99.99% accuracy rate on checking users gayness ~ stolen from pridebot(.xyz)",
               });
-            await interaction.editReply({ embeds: [embed] }).catch(() => {});
+            await interaction.reply({ embeds: [embed] }).catch(() => {});
             return;
           }
           if (val.toLowerCase() === "r") {
@@ -183,8 +183,6 @@ module.exports = {
       runningTargets.add(lockKey);
       acquiredTarget = lockKey;
 
-      await interaction.deferReply();
-
       const userName = targetUser.username;
       const userid = targetUser.id;
 
@@ -214,7 +212,7 @@ module.exports = {
           text: "The bot has 99.99% accuracy rate on checking users gayness ~ stolen from pridebot(.xyz)",
         });
 
-      await interaction.editReply({ embeds: [embed] }).catch(() => {});
+      await interaction.reply({ embeds: [embed] }).catch(() => {});
 
       try { await commandLogging(client, interaction); } catch {}
       try { await darlogging(client, "Gaydar", userName, meter, userid); } catch {}
