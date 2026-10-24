@@ -1661,6 +1661,114 @@ function buildEmbed(metadata, state) {
     return embed;
 }
 
+function buildResultEmbed(metadata, state, filename) {
+    const isSlideshow = state.type === 'slideshow';
+    const isImage = state.type === 'image';
+    const isAudio = state.type === 'audio';
+    const displayDuration = (isAudio && isSlideshow) ? 'Audio' : (metadata.duration || (isAudio ? 'Audio' : (isImage ? 'Image' : 'Video')));
+    let embedTitle = metadata.title || '';
+    if (!embedTitle || embedTitle === 'Unknown Video') {
+        embedTitle = metadata.fileName || filename || 'Media Download';
+    }
+    if (embedTitle.length > 256) {
+        embedTitle = embedTitle.slice(0, 253) + '...';
+    }
+    const embed = new EmbedBuilder()
+        .setTitle(embedTitle)
+        .setColor(0xFBE7BD);
+
+    const validDuration = (displayDuration && displayDuration !== 'Unknown duration')
+        ? displayDuration
+        : (isAudio ? 'Audio' : (isImage ? 'Image' : (isSlideshow ? 'Slideshow' : 'Video')));
+
+    if (metadata.isDirectCdn) {
+        const fileLabel = metadata.fileName || filename;
+        embed.setDescription(`${validDuration} • \`${fileLabel}\``);
+    } else {
+        const validCreator = (metadata.creator && metadata.creator !== 'Unknown Creator') ? metadata.creator : null;
+        const descHeader = validCreator ? `${validDuration} • ${validCreator}` : validDuration;
+        embed.setDescription(descHeader);
+    }
+
+    if (isImage && filename) {
+        embed.setImage(`attachment://${filename}`);
+    } else if (metadata.thumbnailUrl && isAudio) {
+        embed.setThumbnail(metadata.thumbnailUrl);
+    }
+
+    return embed;
+}
+
+function ensureEmbeddableVideo(inputPath, originalFilename, tempDir, maxSizeBytes = 24 * 1024 * 1024) {
+    const cleanBase = (originalFilename || 'video')
+        .replace(/\.[^/.]+$/, '')
+        .replace(/[^a-zA-Z0-9_-]/g, '_')
+        .slice(0, 50) || 'video';
+    const finalFilename = `${cleanBase}.mp4`;
+    const outputPath = path.join(tempDir, `embed_${Date.now()}_${finalFilename}`);
+
+    let vCodec = null;
+    let aCodec = null;
+    let pixFmt = null;
+    let durationSec = 0;
+
+    try {
+        const vInfo = execSync(`ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,pix_fmt,duration -of json "${inputPath}"`).toString();
+        const vParsed = JSON.parse(vInfo);
+        if (vParsed.streams && vParsed.streams[0]) {
+            vCodec = vParsed.streams[0].codec_name;
+            pixFmt = vParsed.streams[0].pix_fmt;
+            durationSec = parseFloat(vParsed.streams[0].duration) || 0;
+        }
+    } catch { }
+
+    try {
+        const aInfo = execSync(`ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of json "${inputPath}"`).toString();
+        const aParsed = JSON.parse(aInfo);
+        if (aParsed.streams && aParsed.streams[0]) {
+            aCodec = aParsed.streams[0].codec_name;
+        }
+    } catch { }
+
+    const inSize = fs.existsSync(inputPath) ? fs.statSync(inputPath).size : 0;
+    const isH264 = vCodec === 'h264';
+    const isYuv420p = pixFmt === 'yuv420p';
+    const isAacOrNone = !aCodec || aCodec === 'aac';
+    const isUnderLimit = inSize > 0 && inSize <= maxSizeBytes;
+
+    if (isH264 && isYuv420p && isAacOrNone && isUnderLimit) {
+        try {
+            execSync(`ffmpeg -y -i "${inputPath}" -c copy -movflags +faststart "${outputPath}"`);
+            if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
+                tryUnlink(inputPath);
+                return { path: outputPath, name: finalFilename };
+            }
+        } catch { }
+    }
+
+    let scaleFilter = '';
+    let videoBitrateArg = '-crf 23';
+    if (!isUnderLimit && durationSec > 0 && durationSec < 600) {
+        const targetBits = (maxSizeBytes * 8 * 0.90);
+        const totalKbps = Math.floor(targetBits / durationSec / 1000);
+        const vKbps = Math.max(200, totalKbps - 128);
+        videoBitrateArg = `-b:v ${vKbps}k -maxrate ${Math.floor(vKbps * 1.5)}k -bufsize ${vKbps * 2}k`;
+        if (vKbps < 700) {
+            scaleFilter = '-vf "scale=\'min(1280,iw)\':-2"';
+        }
+    }
+
+    try {
+        execSync(`ffmpeg -y -i "${inputPath}" -c:v libx264 -pix_fmt yuv420p -preset veryfast ${videoBitrateArg} ${scaleFilter} -c:a aac -b:a 128k -movflags +faststart "${outputPath}"`);
+        if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
+            tryUnlink(inputPath);
+            return { path: outputPath, name: finalFilename };
+        }
+    } catch { }
+
+    return { path: inputPath, name: finalFilename };
+}
+
 async function downloadFromCDN(urls, isAudio, state, metadata, interaction, tempDir, startIndex = 0, endIndex = urls.length) {
     const rawName = metadata.fileName ? path.posix.basename(metadata.fileName, path.posix.extname(metadata.fileName)) : (metadata.title || 'download');
     const safeTitle = rawName.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 50) || 'download';
@@ -1696,7 +1804,8 @@ async function downloadFromCDN(urls, isAudio, state, metadata, interaction, temp
             if (!isAudio && (state.type === 'image' || state.type === 'slideshow')) {
                 return await processSlideFile(buffer, tempFilePath, ext, false, state, currentIdx, urls.length, safeTitle, tempDir);
             } else {
-                return { path: tempFilePath, name: finalFilename };
+                const opt = ensureEmbeddableVideo(tempFilePath, finalFilename, tempDir);
+                return { path: opt.path, name: opt.name };
             }
         })());
     }
@@ -1785,10 +1894,11 @@ async function handleBatchDownload(batchIndex, urls, pickerItems, audioUrl, isAu
             contentText += `Downloaded audio.`;
         }
 
+        const resultEmbed = buildResultEmbed(metadata, state, downloadedFiles[0]?.name);
         const replyPayload = {
             content: contentText,
             files: downloadedFiles.map(f => new AttachmentBuilder(f.path, { name: f.name })),
-            embeds: [],
+            embeds: [resultEmbed],
             components: row ? [row] : []
         };
 
@@ -1924,10 +2034,12 @@ module.exports = {
                     audioFiles.sort((a, b) => fs.statSync(path.join(spotifyTrackDir, b)).mtimeMs - fs.statSync(path.join(spotifyTrackDir, a)).mtimeMs);
                     const audioFile = audioFiles[0];
                     const audioPath = path.join(spotifyTrackDir, audioFile);
+                    const spotifyEmbed = buildResultEmbed(metadata, state, audioFile);
+                    if (metadata.thumbnailUrl) spotifyEmbed.setThumbnail(metadata.thumbnailUrl);
                     await interaction.editReply({
-                        content: `📄 \`${audioFile}\``,
+                        content: null,
+                        embeds: [spotifyEmbed],
                         files: [new AttachmentBuilder(audioPath, { name: audioFile })],
-                        embeds: [],
                         components: []
                     }).catch(() => null);
                     tryUnlink(audioPath);
@@ -2050,8 +2162,15 @@ module.exports = {
                             finalFilename = `${base}.${fmt}`;
                             tempFilePath = path.join(tempDir, `temp_${Date.now()}_${finalFilename}`);
                             fs.writeFileSync(tempFilePath, processedBuffer);
-                        } else {
+                        } else if (state.type === 'audio') {
+                            tempFilePath = path.join(tempDir, `temp_${Date.now()}_${finalFilename}`);
                             fs.writeFileSync(tempFilePath, buffer);
+                        } else {
+                            tempFilePath = path.join(tempDir, `temp_${Date.now()}_${finalFilename}`);
+                            fs.writeFileSync(tempFilePath, buffer);
+                            const opt = ensureEmbeddableVideo(tempFilePath, finalFilename, tempDir);
+                            tempFilePath = opt.path;
+                            finalFilename = opt.name;
                         }
 
                         const actualSize = fs.statSync(tempFilePath).size;
@@ -2076,10 +2195,11 @@ module.exports = {
                             components: []
                         }).catch(() => null);
 
+                        const resultEmbed = buildResultEmbed(metadata, state, finalFilename);
                         await interaction.editReply({
-                            content: `📄 \`${finalFilename}\``,
+                            content: null,
+                            embeds: [resultEmbed],
                             files: [new AttachmentBuilder(tempFilePath, { name: finalFilename })],
-                            embeds: [],
                             components: []
                         }).catch(() => null);
                         if (fs.existsSync(tempFilePath)) tryUnlink(tempFilePath);
