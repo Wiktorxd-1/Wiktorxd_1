@@ -148,13 +148,17 @@ function findLargestMedia($, pageUrl) {
                     $('meta[property="og:video:url"]').attr('content') ||
                     $('meta[property="og:video"]').attr('content') ||
                     $('meta[name="twitter:player:stream"]').attr('content');
+    const ogVideoType = $('meta[property="og:video:type"]').attr('content') || '';
     if (ogVideo) {
-        try {
-            videoCandidates.push({
-                url: new URL(ogVideo, pageUrl).href,
-                score: 10000000
-            });
-        } catch { }
+        const isDirectStream = /\.(mp4|webm|mov|m4v|mkv)(\?.*)?$/i.test(ogVideo) || ogVideoType.startsWith('video/');
+        if (isDirectStream) {
+            try {
+                videoCandidates.push({
+                    url: new URL(ogVideo, pageUrl).href,
+                    score: 10000000
+                });
+            } catch { }
+        }
     }
 
     $('video').each((_, el) => {
@@ -1313,7 +1317,7 @@ async function fetchMetadata(url) {
                               targetUrl.includes('bsky.app') || targetUrl.includes('rutube.ru') ||
                               targetUrl.includes('pinterest.com') || targetUrl.includes('pin.it');
 
-    if (!isSpecialPlatform || title === 'Unknown Video' || directUrls.length === 0) {
+    if (!isSpecialPlatform) {
         const pageData = await scrapeGenericPage(targetUrl);
         if (pageData) {
             if (title === 'Unknown Video' && pageData.title) title = pageData.title;
@@ -1341,6 +1345,17 @@ async function fetchMetadata(url) {
                     durationSeconds = 0;
                     if (!thumbnailUrl) thumbnailUrl = pageData.largestMedia.url;
                 }
+            }
+        }
+    } else if (title === 'Unknown Video' || creator === 'Unknown Creator' || !thumbnailUrl) {
+        const pageData = await scrapeGenericPage(targetUrl);
+        if (pageData) {
+            if (title === 'Unknown Video' && pageData.title) title = pageData.title;
+            if (creator === 'Unknown Creator' && pageData.creator) creator = pageData.creator;
+            if (!thumbnailUrl && pageData.thumbnailUrl) thumbnailUrl = pageData.thumbnailUrl;
+            if (!durationSeconds && pageData.durationSeconds) {
+                durationSeconds = pageData.durationSeconds;
+                duration = formatDuration(durationSeconds);
             }
         }
     }
@@ -1661,51 +1676,15 @@ function buildEmbed(metadata, state) {
     return embed;
 }
 
-function buildResultEmbed(metadata, state, filename) {
-    const isSlideshow = state.type === 'slideshow';
-    const isImage = state.type === 'image';
-    const isAudio = state.type === 'audio';
-    const displayDuration = (isAudio && isSlideshow) ? 'Audio' : (metadata.duration || (isAudio ? 'Audio' : (isImage ? 'Image' : 'Video')));
-    let embedTitle = metadata.title || '';
-    if (!embedTitle || embedTitle === 'Unknown Video') {
-        embedTitle = metadata.fileName || filename || 'Media Download';
-    }
-    if (embedTitle.length > 256) {
-        embedTitle = embedTitle.slice(0, 253) + '...';
-    }
-    const embed = new EmbedBuilder()
-        .setTitle(embedTitle)
-        .setColor(0xFBE7BD);
-
-    const validDuration = (displayDuration && displayDuration !== 'Unknown duration')
-        ? displayDuration
-        : (isAudio ? 'Audio' : (isImage ? 'Image' : (isSlideshow ? 'Slideshow' : 'Video')));
-
-    if (metadata.isDirectCdn) {
-        const fileLabel = metadata.fileName || filename;
-        embed.setDescription(`${validDuration} • \`${fileLabel}\``);
-    } else {
-        const validCreator = (metadata.creator && metadata.creator !== 'Unknown Creator') ? metadata.creator : null;
-        const descHeader = validCreator ? `${validDuration} • ${validCreator}` : validDuration;
-        embed.setDescription(descHeader);
-    }
-
-    if (isImage && filename) {
-        embed.setImage(`attachment://${filename}`);
-    } else if (metadata.thumbnailUrl && isAudio) {
-        embed.setThumbnail(metadata.thumbnailUrl);
-    }
-
-    return embed;
-}
-
 function ensureEmbeddableVideo(inputPath, originalFilename, tempDir, maxSizeBytes = 24 * 1024 * 1024) {
     const cleanBase = (originalFilename || 'video')
         .replace(/\.[^/.]+$/, '')
-        .replace(/[^a-zA-Z0-9_-]/g, '_')
-        .slice(0, 50) || 'video';
+        .replace(/[",;`$\r\n\t]/g, '')
+        .trim()
+        .slice(0, 70) || 'video';
     const finalFilename = `${cleanBase}.mp4`;
-    const outputPath = path.join(tempDir, `embed_${Date.now()}_${finalFilename}`);
+    const safeOutputBasename = `embed_${Date.now()}_${cleanBase.replace(/[^a-zA-Z0-9_-]/g, '_')}.mp4`;
+    const outputPath = path.join(tempDir, safeOutputBasename);
 
     let vCodec = null;
     let aCodec = null;
@@ -1876,12 +1855,12 @@ async function handleBatchDownload(batchIndex, urls, pickerItems, audioUrl, isAu
 
         const filenamesList = downloadedFiles.map(f => `📄 \`${f.name}\``).join('\n');
         const imagesLeft = total - batchEnd;
-        let contentText = filenamesList + '\n\n';
+        let contentText = filenamesList;
 
         let row = null;
         if (!isAudio && imagesLeft > 0) {
             const nextBatchSize = Math.min(10, imagesLeft);
-            contentText += `Downloaded ${batchEnd}/${total} images, if you want to download the rest, use the "Download batch ${batchIndex + 2}" button to download the next ${nextBatchSize}`;
+            contentText += `\n\nDownloaded ${batchEnd}/${total} images, if you want to download the rest, use the "Download batch ${batchIndex + 2}" button to download the next ${nextBatchSize}`;
             row = new ActionRowBuilder().addComponents(
                 new ButtonBuilder()
                     .setCustomId(`dl_batch_${batchIndex + 1}`)
@@ -1889,16 +1868,15 @@ async function handleBatchDownload(batchIndex, urls, pickerItems, audioUrl, isAu
                     .setStyle(ButtonStyle.Primary)
             );
         } else if (total > 1 && !isAudio) {
-            contentText += `Downloaded all ${total} images.`;
+            contentText += `\n\nDownloaded all ${total} images.`;
         } else if (isAudio) {
-            contentText += `Downloaded audio.`;
+            contentText += `\n\nDownloaded audio.`;
         }
 
-        const resultEmbed = buildResultEmbed(metadata, state, downloadedFiles[0]?.name);
         const replyPayload = {
             content: contentText,
             files: downloadedFiles.map(f => new AttachmentBuilder(f.path, { name: f.name })),
-            embeds: [resultEmbed],
+            embeds: [],
             components: row ? [row] : []
         };
 
@@ -2034,11 +2012,9 @@ module.exports = {
                     audioFiles.sort((a, b) => fs.statSync(path.join(spotifyTrackDir, b)).mtimeMs - fs.statSync(path.join(spotifyTrackDir, a)).mtimeMs);
                     const audioFile = audioFiles[0];
                     const audioPath = path.join(spotifyTrackDir, audioFile);
-                    const spotifyEmbed = buildResultEmbed(metadata, state, audioFile);
-                    if (metadata.thumbnailUrl) spotifyEmbed.setThumbnail(metadata.thumbnailUrl);
                     await interaction.editReply({
-                        content: null,
-                        embeds: [spotifyEmbed],
+                        content: `📄 \`${audioFile}\``,
+                        embeds: [],
                         files: [new AttachmentBuilder(audioPath, { name: audioFile })],
                         components: []
                     }).catch(() => null);
@@ -2195,10 +2171,9 @@ module.exports = {
                             components: []
                         }).catch(() => null);
 
-                        const resultEmbed = buildResultEmbed(metadata, state, finalFilename);
                         await interaction.editReply({
-                            content: null,
-                            embeds: [resultEmbed],
+                            content: `📄 \`${finalFilename}\``,
+                            embeds: [],
                             files: [new AttachmentBuilder(tempFilePath, { name: finalFilename })],
                             components: []
                         }).catch(() => null);
