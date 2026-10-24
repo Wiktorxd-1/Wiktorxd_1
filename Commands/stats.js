@@ -213,6 +213,8 @@ async function getCachedTotalCommits() {
   return cachedCommits || 0;
 }
 
+getCachedTotalCommits().catch(() => {});
+
 async function getCachedUserInstalls(client) {
   const now = Date.now();
   if (cachedUserInstalls !== null && now - lastUserInstallsFetch < 300_000) {
