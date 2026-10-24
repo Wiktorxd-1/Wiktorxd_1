@@ -17,9 +17,8 @@ const { execSync } = require('child_process');
 const COBALT_INSTANCES = [
     'https://cobalt-api.wiktorxd-1.dev/',
     'https://api-cobalt.eversiege.network/',
-    'https://api.cobalt.liubquanti.click/',
-    'https://cobalt.omega.wolfy.love/',
-    'https://subito-c.meowing.de/'
+    'https://cobalt.canine.tools/',
+    'https://api.cobalt.liubquanti.click/'
 ];
 
 async function requestCobalt(payload) {
@@ -28,7 +27,7 @@ async function requestCobalt(payload) {
         try {
             const res = await axios.post(api, payload, {
                 headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
-                timeout: 20000
+                timeout: 12000
             });
             if (res.data && res.data.status === 'error') {
                 throw new Error(res.data.error?.code || 'unknown_error');
@@ -40,6 +39,38 @@ async function requestCobalt(payload) {
         }
     }
     throw lastError || new Error('All Cobalt instances failed');
+}
+
+function ensureSpotdlConfig() {
+    try {
+        const homeDir = process.env.HOME || '/home/container';
+        const configPath = path.join(homeDir, '.config/spotdl/config.json');
+        if (fs.existsSync(configPath)) {
+            const raw = fs.readFileSync(configPath, 'utf8');
+            const cfg = JSON.parse(raw);
+            let changed = false;
+            if (cfg.lyrics_providers && cfg.lyrics_providers.length > 0) {
+                cfg.lyrics_providers = [];
+                changed = true;
+            }
+            if (cfg.client_id !== null || cfg.client_secret !== null) {
+                cfg.client_id = null;
+                cfg.client_secret = null;
+                changed = true;
+            }
+            if (cfg.use_cache_file !== false) {
+                cfg.use_cache_file = false;
+                changed = true;
+            }
+            if (cfg.threads !== 8) {
+                cfg.threads = 8;
+                changed = true;
+            }
+            if (changed) {
+                fs.writeFileSync(configPath, JSON.stringify(cfg, null, 4));
+            }
+        }
+    } catch { }
 }
 const UA_BROWSER = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const VIDEO_EXTS = new Set(['mp4', 'm4v', 'mov', 'webm']);
@@ -128,37 +159,64 @@ function isSpotifyUrl(url) {
 }
 
 async function fetchSpotifyMetadata(url) {
-    try {
-        const trackMatch = url.match(/open\.spotify\.com\/track\/([A-Za-z0-9]+)/);
-        const albumMatch = url.match(/open\.spotify\.com\/album\/([A-Za-z0-9]+)/);
-        const playlistMatch = url.match(/open\.spotify\.com\/playlist\/([A-Za-z0-9]+)/);
-        const episodeMatch = url.match(/open\.spotify\.com\/episode\/([A-Za-z0-9]+)/);
+    const trackMatch = url.match(/open\.spotify\.com\/track\/([A-Za-z0-9]+)/);
+    const albumMatch = url.match(/open\.spotify\.com\/album\/([A-Za-z0-9]+)/);
+    const playlistMatch = url.match(/open\.spotify\.com\/playlist\/([A-Za-z0-9]+)/);
+    const episodeMatch = url.match(/open\.spotify\.com\/episode\/([A-Za-z0-9]+)/);
 
-        let kind = 'track';
-        if (albumMatch) kind = 'album';
-        else if (playlistMatch) kind = 'playlist';
-        else if (episodeMatch) kind = 'episode';
+    let kind = 'track';
+    if (albumMatch) kind = 'album';
+    else if (playlistMatch) kind = 'playlist';
+    else if (episodeMatch) kind = 'episode';
 
-        const oEmbedRes = await axios.get(
-            `https://open.spotify.com/oembed?url=${encodeURIComponent(url)}`,
-            { headers: { 'User-Agent': UA_BROWSER }, timeout: 5000 }
-        );
-        const oe = oEmbedRes.data;
-        return {
-            title: oe.title || 'Spotify Track',
-            creator: oe.provider_name || 'Spotify',
-            thumbnailUrl: oe.thumbnail_url || null,
-            kind
-        };
-    } catch {
-        const trackMatch = url.match(/open\.spotify\.com\/track\/([A-Za-z0-9]+)/);
-        return {
-            title: trackMatch ? `Spotify Track` : 'Spotify Content',
-            creator: 'Spotify',
-            thumbnailUrl: null,
-            kind: 'track'
-        };
+    let title = 'Spotify Track';
+    let creator = 'Spotify';
+    let thumbnailUrl = null;
+    let durationSeconds = 0;
+
+    if (trackMatch) {
+        try {
+            const embedRes = await axios.get(`https://open.spotify.com/embed/track/${trackMatch[1]}`, {
+                headers: { 'User-Agent': UA_BROWSER },
+                timeout: 3000
+            });
+            const scriptMatch = embedRes.data.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+            if (scriptMatch) {
+                const data = JSON.parse(scriptMatch[1].trim());
+                const entity = data?.props?.pageProps?.state?.data?.entity;
+                if (entity) {
+                    if (entity.name) title = entity.name;
+                    if (Array.isArray(entity.artists) && entity.artists.length > 0) {
+                        creator = entity.artists.map(a => a.name).join(', ');
+                    }
+                    if (entity.duration) durationSeconds = Math.round(entity.duration / 1000);
+                    if (entity.visualIdentity?.image?.length) {
+                        thumbnailUrl = entity.visualIdentity.image[0].url;
+                    }
+                }
+            }
+        } catch { }
     }
+
+    if (title === 'Spotify Track' || creator === 'Spotify') {
+        try {
+            const oEmbedRes = await axios.get(
+                `https://open.spotify.com/oembed?url=${encodeURIComponent(url)}`,
+                { headers: { 'User-Agent': UA_BROWSER }, timeout: 3000 }
+            );
+            const oe = oEmbedRes.data;
+            if (title === 'Spotify Track' && oe.title) title = oe.title;
+            if (!thumbnailUrl && oe.thumbnail_url) thumbnailUrl = oe.thumbnail_url;
+        } catch { }
+    }
+
+    return {
+        title,
+        creator,
+        thumbnailUrl,
+        durationSeconds,
+        kind
+    };
 }
 
 async function processSlideFile(buffer, tempFilePath, ext, isAudio, state, idx, count, safeTitle, tempDir) {
@@ -333,8 +391,8 @@ async function fetchMetadata(url) {
             title: sp.title,
             creator: sp.creator,
             thumbnailUrl: sp.thumbnailUrl,
-            duration: 'Audio',
-            durationSeconds: 0,
+            duration: sp.durationSeconds ? formatDuration(sp.durationSeconds) : 'Audio',
+            durationSeconds: sp.durationSeconds || 0,
             maxQuality: 1080,
             directUrls: [],
             directAudioUrl: null,
@@ -408,6 +466,8 @@ async function fetchMetadata(url) {
         oEmbedUrl = `https://vk.com/oembed.json?url=${encodeURIComponent(targetUrl)}`;
     } else if (targetUrl.includes('ok.ru')) {
         oEmbedUrl = `https://ok.ru/oembed?url=${encodeURIComponent(targetUrl)}`;
+    } else if (targetUrl.includes('youtube.com') || targetUrl.includes('youtu.be')) {
+        oEmbedUrl = `https://www.youtube.com/oembed?url=${encodeURIComponent(targetUrl)}&format=json`;
     } else if (!targetUrl.includes('reddit.com') && !targetUrl.includes('redd.it') &&
                !targetUrl.includes('bilibili.com') && !targetUrl.includes('bsky.app') &&
                !targetUrl.includes('rutube.ru')) {
@@ -416,7 +476,7 @@ async function fetchMetadata(url) {
 
     if (oEmbedUrl) {
         try {
-            const oe = (await axios.get(oEmbedUrl, { timeout: 5000 })).data;
+            const oe = (await axios.get(oEmbedUrl, { timeout: 4000 })).data;
             if (oe.title) title = oe.title;
             if (oe.author_name) creator = oe.author_name;
             if (oe.thumbnail_url) thumbnailUrl = oe.thumbnail_url;
@@ -426,7 +486,7 @@ async function fetchMetadata(url) {
 
     if (targetUrl.includes('youtube.com') || targetUrl.includes('youtu.be')) {
         try {
-            const pageRes = await axios.get(targetUrl, { headers: { 'User-Agent': UA_BROWSER }, timeout: 5000 });
+            const pageRes = await axios.get(targetUrl, { headers: { 'User-Agent': UA_BROWSER }, timeout: 3500 });
             const html = pageRes.data;
             const heights = (html.match(/"height":\s*(\d+)/g) || [])
                 .map(m => parseInt(m.match(/\d+/)[0]))
@@ -919,20 +979,31 @@ function getComponents(state, maxQuality = 1080, duration = '') {
     const isMedia = duration === 'Image' || duration === 'Slideshow';
 
     if (state.view === 'basic') {
-        if (duration === 'Audio') {
+        if (state.type === 'audio' || duration === 'Audio') {
             const bitrateOptions = [
-                { label: '320 kbps', value: '320', default: state.audioBitrate === '320' },
+                { label: '320 kbps (Best)', value: '320', default: state.audioBitrate === '320' },
                 { label: '256 kbps', value: '256', default: state.audioBitrate === '256' },
+                { label: '160 kbps (Fast)', value: '160', default: state.audioBitrate === '160' },
                 { label: '128 kbps', value: '128', default: state.audioBitrate === '128' },
                 { label: '96 kbps', value: '96', default: state.audioBitrate === '96' },
                 { label: '64 kbps', value: '64', default: state.audioBitrate === '64' }
             ];
-            if (!bitrateOptions.some(o => o.default)) { bitrateOptions[0].default = true; state.audioBitrate = '320'; }
+            if (!bitrateOptions.some(o => o.default)) { bitrateOptions[2].default = true; state.audioBitrate = '160'; }
+            if (duration !== 'Audio' && duration !== 'Slideshow' && duration !== 'Image') {
+                rows.push(new ActionRowBuilder().addComponents(
+                    new StringSelectMenuBuilder().setCustomId('dl_type').setPlaceholder('Type...').addOptions([
+                        { label: 'Video', value: 'video', description: 'Download video with audio' },
+                        { label: 'Video (muted)', value: 'video_muted', description: 'Download video without audio' },
+                        { label: 'Audio', value: 'audio', description: 'Download audio only', default: true }
+                    ])
+                ));
+            }
             rows.push(new ActionRowBuilder().addComponents(
                 new StringSelectMenuBuilder().setCustomId('dl_bitrate').setPlaceholder('Audio Bitrate...').addOptions(bitrateOptions)
             ));
             rows.push(new ActionRowBuilder().addComponents(
-                new ButtonBuilder().setCustomId('dl_start').setLabel('Download').setStyle(ButtonStyle.Success)
+                new ButtonBuilder().setCustomId('dl_start').setLabel('Download').setStyle(ButtonStyle.Success),
+                new ButtonBuilder().setCustomId('dl_to_advanced').setLabel('Advanced').setStyle(ButtonStyle.Secondary)
             ));
             return rows;
         }
@@ -1021,6 +1092,33 @@ function getComponents(state, maxQuality = 1080, duration = '') {
                     { label: 'Nerdy', value: 'nerdy', description: 'Never Gonna Give You Up - Rick Astley (dQw4w9WgXcQ)', default: state.filename === 'nerdy' }
                 ])
             ));
+        } else if (state.type === 'audio') {
+            rows.push(new ActionRowBuilder().addComponents(
+                new StringSelectMenuBuilder().setCustomId('dl_filename').setPlaceholder('Filename Style...').addOptions([
+                    { label: 'Pretty', value: 'pretty', description: 'Artist - Title', default: state.filename === 'pretty' },
+                    { label: 'Classic', value: 'classic', description: 'Source ID style', default: state.filename === 'classic' },
+                    { label: 'Basic', value: 'basic', description: 'Title only', default: state.filename === 'basic' }
+                ])
+            ));
+            rows.push(new ActionRowBuilder().addComponents(
+                new StringSelectMenuBuilder().setCustomId('dl_format').setPlaceholder('File Format...').addOptions([
+                    { label: 'mp3 (Standard)', value: 'mp3', default: state.format === 'mp3' },
+                    { label: 'm4a (Fastest / Native)', value: 'm4a', default: state.format === 'm4a' },
+                    { label: 'opus', value: 'opus', default: state.format === 'opus' },
+                    { label: 'wav', value: 'wav', default: state.format === 'wav' },
+                    { label: 'flac', value: 'flac', default: state.format === 'flac' }
+                ])
+            ));
+            rows.push(new ActionRowBuilder().addComponents(
+                new StringSelectMenuBuilder().setCustomId('dl_bitrate').setPlaceholder('Audio Bitrate...').addOptions([
+                    { label: '320 kbps (Best)', value: '320', default: state.audioBitrate === '320' },
+                    { label: '256 kbps', value: '256', default: state.audioBitrate === '256' },
+                    { label: '160 kbps (Fast)', value: '160', default: state.audioBitrate === '160' },
+                    { label: '128 kbps', value: '128', default: state.audioBitrate === '128' },
+                    { label: '96 kbps', value: '96', default: state.audioBitrate === '96' },
+                    { label: '64 kbps', value: '64', default: state.audioBitrate === '64' }
+                ])
+            ));
         } else {
             rows.push(new ActionRowBuilder().addComponents(
                 new StringSelectMenuBuilder().setCustomId('dl_codec').setPlaceholder('Codec...').addOptions([
@@ -1046,12 +1144,12 @@ function getComponents(state, maxQuality = 1080, duration = '') {
             ));
             rows.push(new ActionRowBuilder().addComponents(
                 new StringSelectMenuBuilder().setCustomId('dl_bitrate').setPlaceholder('Audio Bitrate...').addOptions([
-                    { label: '320 kbps', value: '320', default: state.audioBitrate === '320' },
+                    { label: '320 kbps (Best)', value: '320', default: state.audioBitrate === '320' },
                     { label: '256 kbps', value: '256', default: state.audioBitrate === '256' },
+                    { label: '160 kbps (Fast)', value: '160', default: state.audioBitrate === '160' },
                     { label: '128 kbps', value: '128', default: state.audioBitrate === '128' },
                     { label: '96 kbps', value: '96', default: state.audioBitrate === '96' },
-                    { label: '64 kbps', value: '64', default: state.audioBitrate === '64' },
-                    { label: '8 kbps', value: '8', default: state.audioBitrate === '8' }
+                    { label: '64 kbps', value: '64', default: state.audioBitrate === '64' }
                 ])
             ));
         }
@@ -1126,7 +1224,6 @@ function buildCobaltPayload(url, state, maxQuality) {
             payload.audioFormat = 'best';
         }
     } else {
-        // Image
         payload.downloadMode = 'auto';
         payload.videoQuality = 'max';
     }
@@ -1295,11 +1392,11 @@ module.exports = {
         const isSpotify = metadata.isSpotify === true;
         const state = {
             type: isSpotify ? 'audio' : (metadata.duration === 'Image' ? 'image' : metadata.duration === 'Slideshow' ? 'slideshow' : 'video'),
-            quality: isMedia ? '100' : 'max', // Default to max quality
+            quality: isMedia ? '100' : 'max',
             codec: 'h264_aac',
             filename: 'pretty',
-            format: isMedia ? 'png' : 'mp4',
-            audioBitrate: '320',
+            format: isSpotify ? 'mp3' : (isMedia ? 'png' : 'mp4'),
+            audioBitrate: isSpotify ? '160' : '320',
             view: 'basic'
         };
 
@@ -1362,25 +1459,29 @@ module.exports = {
                     await interaction.editReply({ content: 'Downloading from Spotify... <a:loading:1524146146937667784>', embeds: [], components: [] });
                 }
 
+                ensureSpotdlConfig();
+
                 const spotifyTrackDir = path.join(tempDir, `spotify_${Date.now()}`);
                 ensureTempDir(spotifyTrackDir);
                 try {
+                    const format = (state.format === 'm4a' || state.format === 'opus') ? state.format : 'mp3';
+                    const bitrateArg = (format === 'm4a' || format === 'opus') ? '--bitrate disable' : `--bitrate ${state.audioBitrate || 160}k`;
                     await execAsync(
-                        `${spotdlPath} download "${metadata.spotifyUrl}" --output "${spotifyTrackDir}" --format mp3 --audio youtube soundcloud --bitrate ${state.audioBitrate}k --threads 4 --dont-filter-results --no-cache --max-retries 1 --overwrite force --log-level ERROR`,
+                        `${spotdlPath} download "${metadata.spotifyUrl}" --output "${spotifyTrackDir}" --format ${format} ${bitrateArg} --audio youtube-music youtube --threads 8 --dont-filter-results --max-retries 1 --overwrite force --log-level ERROR`,
                         { timeout: 180000 }
                     );
-                    const mp3Files = fs.readdirSync(spotifyTrackDir).filter(f => f.endsWith('.mp3'));
-                    if (!mp3Files.length) throw new Error('spotdl finished but no mp3 found in output directory');
-                    mp3Files.sort((a, b) => fs.statSync(path.join(spotifyTrackDir, b)).mtimeMs - fs.statSync(path.join(spotifyTrackDir, a)).mtimeMs);
-                    const mp3File = mp3Files[0];
-                    const mp3Path = path.join(spotifyTrackDir, mp3File);
+                    const audioFiles = fs.readdirSync(spotifyTrackDir).filter(f => f.endsWith(`.${format}`) || f.endsWith('.mp3') || f.endsWith('.m4a') || f.endsWith('.opus'));
+                    if (!audioFiles.length) throw new Error('spotdl finished but no audio file found in output directory');
+                    audioFiles.sort((a, b) => fs.statSync(path.join(spotifyTrackDir, b)).mtimeMs - fs.statSync(path.join(spotifyTrackDir, a)).mtimeMs);
+                    const audioFile = audioFiles[0];
+                    const audioPath = path.join(spotifyTrackDir, audioFile);
                     await interaction.editReply({
-                        content: `📄 \`${mp3File}\``,
-                        files: [new AttachmentBuilder(mp3Path, { name: mp3File })],
+                        content: `📄 \`${audioFile}\``,
+                        files: [new AttachmentBuilder(audioPath, { name: audioFile })],
                         embeds: [],
                         components: []
                     }).catch(() => null);
-                    tryUnlink(mp3Path);
+                    tryUnlink(audioPath);
                     try { fs.rmdirSync(spotifyTrackDir); } catch {}
                 } catch (e) {
                     try { fs.rmSync(spotifyTrackDir, { recursive: true, force: true }); } catch {}
