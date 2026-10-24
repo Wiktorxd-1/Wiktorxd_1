@@ -12,6 +12,7 @@ const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const sharp = require('sharp');
+const cheerio = require('cheerio');
 const { execSync } = require('child_process');
 
 const COBALT_INSTANCES = [
@@ -73,7 +74,283 @@ function ensureSpotdlConfig() {
     } catch { }
 }
 const UA_BROWSER = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-const VIDEO_EXTS = new Set(['mp4', 'm4v', 'mov', 'webm']);
+const DIRECT_MEDIA_EXTS = new Set([
+    'mp4', 'm4v', 'mov', 'webm', 'mkv', 'avi', 'flv',
+    'mp3', 'wav', 'm4a', 'ogg', 'opus', 'flac', 'aac',
+    'png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg'
+]);
+const VIDEO_EXTS = new Set(['mp4', 'm4v', 'mov', 'webm', 'mkv', 'avi', 'flv']);
+const AUDIO_EXTS = new Set(['mp3', 'wav', 'm4a', 'ogg', 'opus', 'flac', 'aac']);
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'svg']);
+
+function isDirectMediaUrl(urlStr) {
+    try {
+        const u = new URL(urlStr);
+        const clean = u.pathname.toLowerCase().split('?')[0];
+        const m = clean.match(/\.([a-z0-9]+)$/);
+        if (m && DIRECT_MEDIA_EXTS.has(m[1])) return true;
+        if ((u.hostname.includes('discordapp.') || u.hostname.includes('discord.com')) && u.pathname.includes('/attachments/')) return true;
+    } catch { }
+    return false;
+}
+
+function getMediaFileName(urlStr, contentType = '') {
+    try {
+        const u = new URL(urlStr);
+        let base = path.posix.basename(u.pathname);
+        if (base && base.length > 0) {
+            let decoded = decodeURIComponent(base);
+            if (decoded.includes('.')) return decoded;
+            if (contentType.includes('video/mp4')) return `${decoded}.mp4`;
+            if (contentType.includes('video/webm')) return `${decoded}.webm`;
+            if (contentType.includes('audio/mpeg')) return `${decoded}.mp3`;
+            if (contentType.includes('image/png')) return `${decoded}.png`;
+            if (contentType.includes('image/jpeg')) return `${decoded}.jpg`;
+            return decoded;
+        }
+    } catch { }
+    return 'media_file.mp4';
+}
+
+function probeMediaDuration(urlStr) {
+    try {
+        const out = execSync(
+            `ffprobe -user_agent "${UA_BROWSER}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${urlStr}"`,
+            { timeout: 4500 }
+        ).toString().trim();
+        const num = parseFloat(out);
+        if (!isNaN(num) && num > 0) return Math.round(num);
+    } catch { }
+    return 0;
+}
+
+async function checkDirectCdnUrl(urlStr) {
+    if (isDirectMediaUrl(urlStr)) return { isDirect: true, contentType: '' };
+    try {
+        const res = await axios.head(urlStr, {
+            headers: { 'User-Agent': UA_BROWSER },
+            timeout: 2500,
+            maxRedirects: 3
+        });
+        const ct = (res.headers['content-type'] || '').toLowerCase();
+        if (ct.startsWith('video/') || ct.startsWith('audio/') || ct.startsWith('image/')) {
+            return { isDirect: true, contentType: ct };
+        }
+    } catch { }
+    return { isDirect: false, contentType: '' };
+}
+
+function findLargestMedia($, pageUrl) {
+    const IGNORE_REGEX = /(?:avatar|pfp|profile|icon|logo|favicon|emoji|badge|spinner|pixel|spacer|placeholder|thumb_small|nav|footer|button|reaction|reaction-icon|header-logo)/i;
+
+    const videoCandidates = [];
+    const ogVideo = $('meta[property="og:video:secure_url"]').attr('content') ||
+                    $('meta[property="og:video:url"]').attr('content') ||
+                    $('meta[property="og:video"]').attr('content') ||
+                    $('meta[name="twitter:player:stream"]').attr('content');
+    if (ogVideo) {
+        try {
+            videoCandidates.push({
+                url: new URL(ogVideo, pageUrl).href,
+                score: 10000000
+            });
+        } catch { }
+    }
+
+    $('video').each((_, el) => {
+        const v = $(el);
+        let src = v.attr('src');
+        if (!src) {
+            const srcEl = v.find('source[src]');
+            if (srcEl.length) src = srcEl.attr('src');
+        }
+        if (src) {
+            const w = parseInt(v.attr('width') || '0', 10);
+            const h = parseInt(v.attr('height') || '0', 10);
+            if (w > 0 && h > 0 && (w < 200 || h < 200)) return;
+            const checkStr = `${src} ${v.attr('class') || ''} ${v.attr('id') || ''}`;
+            if (IGNORE_REGEX.test(checkStr)) return;
+            try {
+                const fullUrl = new URL(src, pageUrl).href;
+                videoCandidates.push({
+                    url: fullUrl,
+                    score: (w > 0 && h > 0) ? (w * h) : 5000000
+                });
+            } catch { }
+        }
+    });
+
+    if (videoCandidates.length > 0) {
+        videoCandidates.sort((a, b) => b.score - a.score);
+        return { type: 'video', url: videoCandidates[0].url };
+    }
+
+    const imageCandidates = [];
+    const ogImage = $('meta[property="og:image:secure_url"]').attr('content') ||
+                    $('meta[property="og:image:url"]').attr('content') ||
+                    $('meta[property="og:image"]').attr('content') ||
+                    $('meta[name="twitter:image"]').attr('content') ||
+                    $('meta[name="twitter:image:src"]').attr('content');
+    if (ogImage && !IGNORE_REGEX.test(ogImage)) {
+        try {
+            imageCandidates.push({
+                url: new URL(ogImage, pageUrl).href,
+                score: 756000
+            });
+        } catch { }
+    }
+
+    $('img').each((_, el) => {
+        const img = $(el);
+        let src = img.attr('src') || img.attr('data-src') || img.attr('data-original') || img.attr('data-lazy-src');
+        const srcset = img.attr('srcset') || img.attr('data-srcset');
+        if (srcset) {
+            const parts = srcset.split(',').map(s => s.trim()).filter(Boolean);
+            let bestW = 0;
+            let bestPartUrl = null;
+            for (const p of parts) {
+                const tokens = p.split(/\s+/);
+                if (tokens.length >= 2) {
+                    const desc = tokens[1];
+                    const wMatch = desc.match(/(\d+)w/);
+                    const xMatch = desc.match(/(\d+)x/);
+                    let val = 0;
+                    if (wMatch) val = parseInt(wMatch[1], 10);
+                    else if (xMatch) val = parseInt(xMatch[1], 10) * 500;
+                    if (val > bestW) {
+                        bestW = val;
+                        bestPartUrl = tokens[0];
+                    }
+                }
+            }
+            if (bestPartUrl) src = bestPartUrl;
+        }
+
+        if (!src || src.startsWith('data:image/svg') || src.startsWith('data:image/gif;base64,R0lGODlhAQ')) return;
+
+        const w = parseInt(img.attr('width') || '0', 10);
+        const h = parseInt(img.attr('height') || '0', 10);
+        if (w > 0 && h > 0 && (w < 200 || h < 200)) return;
+
+        const checkStr = `${src} ${img.attr('class') || ''} ${img.attr('id') || ''} ${img.attr('alt') || ''} ${img.parent().attr('class') || ''}`;
+        if (IGNORE_REGEX.test(checkStr)) return;
+
+        try {
+            const fullUrl = new URL(src, pageUrl).href;
+            const area = (w > 0 && h > 0) ? (w * h) : 40000;
+            imageCandidates.push({ url: fullUrl, score: area });
+        } catch { }
+    });
+
+    if (imageCandidates.length > 0) {
+        imageCandidates.sort((a, b) => b.score - a.score);
+        return { type: 'image', url: imageCandidates[0].url };
+    }
+
+    return null;
+}
+
+async function scrapeGenericPage(url) {
+    try {
+        const res = await axios.get(url, {
+            headers: { 'User-Agent': UA_BROWSER },
+            timeout: 6000,
+            maxRedirects: 5
+        });
+        const html = typeof res.data === 'string' ? res.data : '';
+        if (!html) return null;
+        const $ = cheerio.load(html);
+
+        let title = null;
+        let creator = null;
+        let thumbnailUrl = null;
+        let durationSeconds = 0;
+        let oEmbedUrl = null;
+
+        const oembedLink = $('link[type="application/json+oembed"]').attr('href') ||
+                           $('link[type="text/json+oembed"]').attr('href');
+        if (oembedLink) {
+            try { oEmbedUrl = new URL(oembedLink, url).href; } catch { }
+        }
+
+        if (oEmbedUrl) {
+            try {
+                const oeRes = await axios.get(oEmbedUrl, { headers: { 'User-Agent': UA_BROWSER }, timeout: 4000 });
+                const oe = oeRes.data;
+                if (oe) {
+                    if (oe.title) title = oe.title;
+                    if (oe.author_name) creator = oe.author_name;
+                    if (oe.thumbnail_url) thumbnailUrl = oe.thumbnail_url;
+                    if (oe.duration) durationSeconds = parseInt(oe.duration, 10) || 0;
+                }
+            } catch { }
+        }
+
+        $('script[type="application/ld+json"]').each((_, el) => {
+            try {
+                const raw = $(el).html();
+                if (!raw) return;
+                const data = JSON.parse(raw.trim());
+                const items = Array.isArray(data) ? data : [data];
+                for (const item of items) {
+                    if (!item || typeof item !== 'object') continue;
+                    if (!title && (item.name || item.headline)) title = item.name || item.headline;
+                    if (!creator) {
+                        const author = item.author || item.creator;
+                        if (typeof author === 'string') creator = author;
+                        else if (author?.name) creator = author.name;
+                    }
+                    if (!thumbnailUrl && item.thumbnailUrl) {
+                        thumbnailUrl = Array.isArray(item.thumbnailUrl) ? item.thumbnailUrl[0] : item.thumbnailUrl;
+                    }
+                    if (!durationSeconds && item.duration) {
+                        durationSeconds = parseISODuration(item.duration);
+                    }
+                }
+            } catch { }
+        });
+
+        const ogTitle = $('meta[property="og:title"]').attr('content') ||
+                        $('meta[name="twitter:title"]').attr('content');
+        const ogCreator = $('meta[property="og:site_name"]').attr('content') ||
+                          $('meta[name="author"]').attr('content') ||
+                          $('meta[property="article:author"]').attr('content') ||
+                          $('meta[name="twitter:creator"]').attr('content');
+        const ogImage = $('meta[property="og:image:secure_url"]').attr('content') ||
+                        $('meta[property="og:image:url"]').attr('content') ||
+                        $('meta[property="og:image"]').attr('content') ||
+                        $('meta[name="twitter:image"]').attr('content') ||
+                        $('meta[name="twitter:image:src"]').attr('content');
+        const ogDuration = $('meta[property="og:video:duration"]').attr('content') ||
+                           $('meta[property="music:duration"]').attr('content');
+
+        if (!title && ogTitle) title = ogTitle;
+        if (!title) {
+            const dt = $('title').text().trim();
+            if (dt) title = dt;
+        }
+
+        if (!creator && ogCreator) creator = ogCreator;
+        if (!thumbnailUrl && ogImage) {
+            try { thumbnailUrl = new URL(ogImage, url).href; } catch { }
+        }
+        if (!durationSeconds && ogDuration) {
+            durationSeconds = parseInt(ogDuration, 10) || 0;
+        }
+
+        const largestMedia = findLargestMedia($, url);
+
+        return {
+            title,
+            creator,
+            thumbnailUrl,
+            durationSeconds,
+            largestMedia
+        };
+    } catch {
+        return null;
+    }
+}
 
 function videoHasAudio(filePath) {
     try {
@@ -385,6 +662,32 @@ async function fetchMetadata(url) {
     let duration = 'Unknown duration', durationSeconds = 0, maxQuality = 1080;
     let directUrls = [], directAudioUrl = null;
 
+    const directCheck = await checkDirectCdnUrl(url);
+    if (directCheck.isDirect) {
+        const fileName = getMediaFileName(url, directCheck.contentType);
+        const ext = getExt(fileName) || (directCheck.contentType?.includes('image') ? 'png' : (directCheck.contentType?.includes('audio') ? 'mp3' : 'mp4'));
+        const isImage = IMAGE_EXTS.has(ext);
+        const isAudio = AUDIO_EXTS.has(ext);
+        let dur = isImage ? 'Image' : (isAudio ? 'Audio' : 'Video');
+        let durSec = 0;
+        if (!isImage) {
+            durSec = probeMediaDuration(url);
+            if (durSec > 0) dur = formatDuration(durSec);
+        }
+        return {
+            title: fileName,
+            fileName,
+            creator: null,
+            thumbnailUrl: isImage ? url : null,
+            duration: dur,
+            durationSeconds: durSec,
+            maxQuality: 1080,
+            directUrls: [url],
+            directAudioUrl: isAudio ? url : null,
+            isDirectCdn: true
+        };
+    }
+
     if (isSpotifyUrl(url)) {
         const sp = await fetchSpotifyMetadata(url);
         return {
@@ -609,11 +912,28 @@ async function fetchMetadata(url) {
         try {
             const statusMatch = targetUrl.match(/\/status\/(\d+)/);
             const userMatch = targetUrl.match(/(?:twitter|x)\.com\/([^/?#]+)\/status/);
-            if (statusMatch && userMatch) {
-                const username = userMatch[1];
+            if (statusMatch) {
+                const username = userMatch ? userMatch[1] : null;
                 const statusId = statusMatch[1];
-                const fxRes = await axios.get(`https://api.fxtwitter.com/${username}/status/${statusId}`, { timeout: 8000 });
-                const tweet = fxRes.data?.tweet;
+                let tweet = null;
+                try {
+                    const fxRes = await axios.get(`https://api.fxtwitter.com/status/${statusId}`, { timeout: 6000 });
+                    tweet = fxRes.data?.tweet;
+                } catch {
+                    try {
+                        const vxRes = await axios.get(`https://api.vxtwitter.com/Twitter/status/${statusId}`, { timeout: 6000 });
+                        if (vxRes.data) {
+                            tweet = {
+                                text: vxRes.data.text,
+                                author: { name: vxRes.data.user_name || vxRes.data.user_screen_name },
+                                media: {
+                                    photos: (vxRes.data.media_urls || []).filter(u => u.match(/\.(jpg|jpeg|png|webp)/i)).map(u => ({ url: u })),
+                                    videos: vxRes.data.video_url ? [{ duration: 0 }] : []
+                                }
+                            };
+                        }
+                    } catch { }
+                }
                 if (tweet) {
                     if (tweet.text) title = tweet.text.slice(0, 256);
                     if (tweet.author?.name) creator = tweet.author.name;
@@ -638,9 +958,12 @@ async function fetchMetadata(url) {
                         if (vid?.duration) {
                             durationSeconds = Math.round(vid.duration);
                             duration = formatDuration(durationSeconds);
+                        } else {
+                            duration = 'Video';
                         }
                     }
                 }
+                if (creator === 'Unknown Creator' && username) creator = `@${username}`;
             }
         } catch { }
     }
@@ -969,9 +1292,86 @@ async function fetchMetadata(url) {
         } catch { }
     }
 
-    if (durationSeconds > 0 && duration === 'Unknown duration') duration = formatDuration(durationSeconds);
+    if (targetUrl.includes('twitch.tv')) {
+        try {
+            const oe = (await axios.get(`https://www.twitch.tv/oembed?url=${encodeURIComponent(targetUrl)}`, {
+                headers: { 'User-Agent': UA_BROWSER }, timeout: 5000
+            })).data;
+            if (oe) {
+                if (oe.title) title = oe.title;
+                if (oe.author_name) creator = oe.author_name;
+                if (oe.thumbnail_url) thumbnailUrl = oe.thumbnail_url;
+            }
+        } catch { }
+    }
 
-    return { title, creator, thumbnailUrl, duration, durationSeconds, maxQuality, directUrls, directAudioUrl };
+    const isSpecialPlatform = targetUrl.includes('youtube.com') || targetUrl.includes('youtu.be') ||
+                              targetUrl.includes('instagram.com') || targetUrl.includes('instagr.am') ||
+                              targetUrl.includes('tiktok.com') || targetUrl.includes('twitter.com') ||
+                              targetUrl.includes('x.com') || targetUrl.includes('reddit.com') ||
+                              targetUrl.includes('redd.it') || targetUrl.includes('bilibili.com') ||
+                              targetUrl.includes('bsky.app') || targetUrl.includes('rutube.ru') ||
+                              targetUrl.includes('pinterest.com') || targetUrl.includes('pin.it');
+
+    if (!isSpecialPlatform || title === 'Unknown Video' || directUrls.length === 0) {
+        const pageData = await scrapeGenericPage(targetUrl);
+        if (pageData) {
+            if (title === 'Unknown Video' && pageData.title) title = pageData.title;
+            if (creator === 'Unknown Creator' && pageData.creator) creator = pageData.creator;
+            if (!thumbnailUrl && pageData.thumbnailUrl) thumbnailUrl = pageData.thumbnailUrl;
+            if (!durationSeconds && pageData.durationSeconds) {
+                durationSeconds = pageData.durationSeconds;
+                duration = formatDuration(durationSeconds);
+            }
+            if (directUrls.length === 0 && pageData.largestMedia) {
+                if (pageData.largestMedia.type === 'video') {
+                    directUrls = [pageData.largestMedia.url];
+                    if (duration === 'Unknown duration') {
+                        const probed = probeMediaDuration(pageData.largestMedia.url);
+                        if (probed > 0) {
+                            durationSeconds = probed;
+                            duration = formatDuration(durationSeconds);
+                        } else {
+                            duration = 'Video';
+                        }
+                    }
+                } else if (pageData.largestMedia.type === 'image') {
+                    directUrls = [pageData.largestMedia.url];
+                    duration = 'Image';
+                    durationSeconds = 0;
+                    if (!thumbnailUrl) thumbnailUrl = pageData.largestMedia.url;
+                }
+            }
+        }
+    }
+
+    if (durationSeconds > 0 && (duration === 'Unknown duration' || !duration)) {
+        duration = formatDuration(durationSeconds);
+    }
+    if (duration === 'Unknown duration') {
+        duration = 'Video';
+    }
+    if (creator === 'Unknown Creator') {
+        try {
+            const u = new URL(targetUrl);
+            const hostParts = u.hostname.replace(/^www\./, '').split('.');
+            creator = hostParts[0].charAt(0).toUpperCase() + hostParts[0].slice(1);
+        } catch {
+            creator = null;
+        }
+    }
+    if (!title || title === 'Unknown Video') {
+        try {
+            const u = new URL(targetUrl);
+            const hostParts = u.hostname.replace(/^www\./, '').split('.');
+            const sName = hostParts[0].charAt(0).toUpperCase() + hostParts[0].slice(1);
+            title = `${duration || 'Media'} from ${sName}`;
+        } catch {
+            title = 'Media Download';
+        }
+    }
+
+    return { title, creator, thumbnailUrl, duration, durationSeconds, maxQuality, directUrls, directAudioUrl, isDirectCdn: false };
 }
 
 function getComponents(state, maxQuality = 1080, duration = '') {
@@ -1234,26 +1634,43 @@ function buildEmbed(metadata, state) {
     const isSlideshow = metadata.duration === 'Slideshow' || metadata.duration === 'Image';
     const displayDuration = (state.type === 'audio' && isSlideshow) ? 'Audio' : metadata.duration;
     let embedTitle = metadata.title || '';
+    if (!embedTitle || embedTitle === 'Unknown Video') {
+        embedTitle = metadata.fileName || 'Media Download';
+    }
     if (embedTitle.length > 256) {
         embedTitle = embedTitle.slice(0, 253) + '...';
     }
     const embed = new EmbedBuilder()
         .setTitle(embedTitle)
-        .setDescription(`${displayDuration} - ${metadata.creator}\n\nUse the buttons below to continue`)
         .setColor(0xFBE7BD);
+
+    const validDuration = (displayDuration && displayDuration !== 'Unknown duration')
+        ? displayDuration
+        : (state.type === 'audio' ? 'Audio' : (state.type === 'image' ? 'Image' : (state.type === 'slideshow' ? 'Slideshow' : 'Video')));
+
+    if (metadata.isDirectCdn) {
+        const fileLabel = metadata.fileName || metadata.title || 'File';
+        embed.setDescription(`${validDuration} • \`${fileLabel}\`\n\nUse the buttons below to continue`);
+    } else {
+        const validCreator = (metadata.creator && metadata.creator !== 'Unknown Creator') ? metadata.creator : null;
+        const descHeader = validCreator ? `${validDuration} • ${validCreator}` : validDuration;
+        embed.setDescription(`${descHeader}\n\nUse the buttons below to continue`);
+    }
+
     if (metadata.thumbnailUrl) embed.setThumbnail(metadata.thumbnailUrl);
     return embed;
 }
 
 async function downloadFromCDN(urls, isAudio, state, metadata, interaction, tempDir, startIndex = 0, endIndex = urls.length) {
-    const safeTitle = (metadata.title || 'download').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 50);
+    const rawName = metadata.fileName ? path.posix.basename(metadata.fileName, path.posix.extname(metadata.fileName)) : (metadata.title || 'download');
+    const safeTitle = rawName.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 50) || 'download';
     const promises = [];
 
     for (let idx = startIndex; idx < endIndex; idx++) {
         const currentIdx = idx;
         const dlUrl = urls[currentIdx];
         promises.push((async () => {
-            let ext = isAudio ? 'mp3' : (getExt(dlUrl) || 'mp4');
+            let ext = isAudio ? (state.format || 'mp3') : (getExt(metadata.fileName || dlUrl) || 'mp4');
             const res = await axios({ url: dlUrl, method: 'GET', responseType: 'arraybuffer', timeout: 60000, headers: { 'User-Agent': UA_BROWSER } });
             if (res.status < 200 || res.status >= 300) throw new Error(`CDN returned ${res.status}`);
 
@@ -1261,6 +1678,20 @@ async function downloadFromCDN(urls, isAudio, state, metadata, interaction, temp
             let finalFilename = urls.length > 1 ? `${safeTitle}_${currentIdx + 1}.${ext}` : `${safeTitle}.${ext}`;
             let tempFilePath = path.join(tempDir, `temp_${Date.now()}_${currentIdx}_${finalFilename}`);
             fs.writeFileSync(tempFilePath, buffer);
+
+            if (isAudio) {
+                const origExt = (getExt(metadata.fileName || dlUrl) || '').toLowerCase();
+                if (VIDEO_EXTS.has(origExt) || origExt === 'mp4' || origExt === 'webm' || origExt === 'mov') {
+                    const audioFilename = urls.length > 1 ? `${safeTitle}_${currentIdx + 1}.mp3` : `${safeTitle}.mp3`;
+                    const audioPath = path.join(tempDir, `temp_${Date.now()}_${currentIdx}_${audioFilename}`);
+                    try {
+                        execSync(`ffmpeg -y -i "${tempFilePath}" -vn -c:a libmp3lame -b:a ${state.audioBitrate || 160}k "${audioPath}"`);
+                        tryUnlink(tempFilePath);
+                        return { path: audioPath, name: audioFilename };
+                    } catch { }
+                }
+                return { path: tempFilePath, name: finalFilename };
+            }
 
             if (!isAudio && (state.type === 'image' || state.type === 'slideshow')) {
                 return await processSlideFile(buffer, tempFilePath, ext, false, state, currentIdx, urls.length, safeTitle, tempDir);
@@ -1315,6 +1746,23 @@ async function handleBatchDownload(batchIndex, urls, pickerItems, audioUrl, isAu
             downloadedFiles = await downloadFromCDN(urls, isAudio, state, metadata, interaction, tempDir, batchStart, batchEnd);
         } else {
             downloadedFiles = await downloadFromPicker(pickerItems, audioUrl, isAudio, state, tempDir, batchStart, batchEnd);
+        }
+
+        if (downloadedFiles.length > 0 && fs.existsSync(downloadedFiles[0].path)) {
+            const actualSize = fs.statSync(downloadedFiles[0].path).size;
+            if (actualSize > 300 * 1024 * 1024) {
+                const totalSizeMB = (actualSize / 1048576).toFixed(1);
+                const fileUrl = urls ? urls[0] : (pickerItems ? pickerItems[0]?.url : null);
+                const errorPayload = {
+                    content: `❌ **File is too large (${totalSizeMB} MB) to upload directly (> 300 MB).**\nPlease download it directly here:`,
+                    embeds: [],
+                    components: fileUrl ? [new ActionRowBuilder().addComponents(new ButtonBuilder().setLabel('Download File').setStyle(ButtonStyle.Link).setURL(fileUrl))] : [],
+                    files: []
+                };
+                if (batchIndex === 0) await interaction.editReply(errorPayload);
+                else await interaction.followUp(errorPayload);
+                return;
+            }
         }
 
         const filenamesList = downloadedFiles.map(f => `📄 \`${f.name}\``).join('\n');
@@ -1390,12 +1838,13 @@ module.exports = {
 
         const isMedia = metadata.duration === 'Image' || metadata.duration === 'Slideshow';
         const isSpotify = metadata.isSpotify === true;
+        const isAudioDefault = isSpotify || metadata.duration === 'Audio';
         const state = {
-            type: isSpotify ? 'audio' : (metadata.duration === 'Image' ? 'image' : metadata.duration === 'Slideshow' ? 'slideshow' : 'video'),
+            type: isAudioDefault ? 'audio' : (metadata.duration === 'Image' ? 'image' : metadata.duration === 'Slideshow' ? 'slideshow' : 'video'),
             quality: isMedia ? '100' : 'max',
             codec: 'h264_aac',
             filename: 'pretty',
-            format: isSpotify ? 'mp3' : (isMedia ? 'png' : 'mp4'),
+            format: isAudioDefault ? 'mp3' : (isMedia ? 'png' : 'mp4'),
             audioBitrate: isSpotify ? '160' : '320',
             view: 'basic'
         };
@@ -1490,9 +1939,9 @@ module.exports = {
                 return;
             }
 
-            if ((isAudio && metadata.directAudioUrl) || (!isAudio && metadata.directUrls?.length > 0)) {
+            if ((isAudio && (metadata.directAudioUrl || metadata.directUrls?.length > 0)) || (!isAudio && metadata.directUrls?.length > 0)) {
                 await i.update({ content: 'Downloading... <a:loading:1524146146937667784>', embeds: [], components: [] });
-                const urls = isAudio ? [metadata.directAudioUrl] : metadata.directUrls;
+                const urls = (isAudio && metadata.directAudioUrl) ? [metadata.directAudioUrl] : metadata.directUrls;
                 await handleBatchDownload(0, urls, null, null, isAudio, state, metadata, interaction, tempDir);
                 return;
             }
