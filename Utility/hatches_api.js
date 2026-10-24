@@ -241,6 +241,14 @@ function startHatchesApi(discordClient) {
                     res.end('Failed to fetch Infinity Egg page.');
                 });
 
+        } else if (req.url === '/ping' || req.url.startsWith('/ping?')) {
+            if (rateLimited(res)) return;
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+                wsPing: discordClient?.ws?.ping ?? -1,
+                uptime: process.uptime()
+            }));
+            return;
         } else if (req.url.startsWith('/status')) {
             if (rateLimited(res)) return;
             if (!discordClient) {

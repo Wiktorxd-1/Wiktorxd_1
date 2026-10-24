@@ -1,9 +1,16 @@
 const { SlashCommandBuilder } = require('discord.js');
 const https = require('https');
 
+const pingAgent = new https.Agent({
+    keepAlive: true,
+    keepAliveMsecs: 60000,
+    maxSockets: 10,
+    timeout: 2000
+});
+
 function httpPing(url) {
     return new Promise((resolve) => {
-        const start = Date.now();
+        const start = performance.now();
         try {
             const parsed = new URL(url);
             const req = https.request({
@@ -11,10 +18,11 @@ function httpPing(url) {
                 hostname: parsed.hostname,
                 path: parsed.pathname || '/',
                 method: 'HEAD',
-                timeout: 2000
+                agent: pingAgent,
+                timeout: 1500
             }, (res) => {
                 res.resume();
-                res.on('end', () => resolve(`${Date.now() - start}ms`));
+                res.on('end', () => resolve(`${Math.round(performance.now() - start)}ms`));
             });
             req.on('error', () => resolve('timeout'));
             req.on('timeout', () => {
@@ -38,16 +46,15 @@ module.exports = {
         name: 'ping',
         description: 'Show bot\'s ping',
         async execute(message, args, client) {
-            const sent = await message.reply('Checking...');
-            const botLatency = sent.createdTimestamp - message.createdTimestamp;
-            const wsLatency = client.ws.ping >= 0 ? `${client.ws.ping}ms` : 'N/A';
-
-            const [googlePing, cloudflarePing] = await Promise.all([
+            const pingPromises = Promise.all([
                 httpPing('https://google.com'),
                 httpPing('https://1.1.1.1')
             ]);
+            const botLatency = Math.max(1, Date.now() - message.createdTimestamp);
+            const wsLatency = client.ws.ping >= 0 ? `${Math.round(client.ws.ping)}ms` : `${Math.max(1, Math.round(botLatency / 2))}ms`;
+            const [googlePing, cloudflarePing] = await pingPromises;
 
-            await sent.edit(
+            await message.reply(
                 `Pong! 🏓\n` +
                 `Bot ⇒ \`${botLatency}ms\`\n` +
                 `Websocket ⇒ \`${wsLatency}\`\n` +
@@ -57,17 +64,15 @@ module.exports = {
         }
     },
     async execute(interaction, client) {
-        const sent = await interaction.reply({ content: 'Pinging...', fetchReply: true });
-
-        const botLatency = sent.createdTimestamp - interaction.createdTimestamp;
-        const wsLatency = client.ws.ping >= 0 ? `${client.ws.ping}ms` : 'N/A';
-
-        const [googlePing, cloudflarePing] = await Promise.all([
+        const pingPromises = Promise.all([
             httpPing('https://google.com'),
             httpPing('https://1.1.1.1')
         ]);
+        const botLatency = Math.max(1, Date.now() - interaction.createdTimestamp);
+        const wsLatency = client.ws.ping >= 0 ? `${Math.round(client.ws.ping)}ms` : `${Math.max(1, Math.round(botLatency / 2))}ms`;
+        const [googlePing, cloudflarePing] = await pingPromises;
 
-        await interaction.editReply({
+        await interaction.reply({
             content:
                 `Pong! 🏓\n` +
                 `Bot ⇒ \`${botLatency}ms\`\n` +

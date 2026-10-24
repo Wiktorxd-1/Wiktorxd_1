@@ -2,6 +2,8 @@ const { Client, IntentsBitField, ActivityType, Collection, Options } = require('
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
+const dns = require('dns');
+const { Agent } = require('undici');
 const { startUptimeUpdater } = require('./Utility/uptime');
 const startDevMsgWatcher = require('./Utility/dev_msgs.js');
 const startSecretsWatcher = require('./Utility/Hatches/secrets.js');
@@ -12,6 +14,19 @@ const { initializeDailyPerks, handleDailyPerkInteraction } = require('./Utility/
 const { startTempCleaner } = require('./Utility/storage_cleaner.js');
 const { checkRateLimit } = require('./Utility/rate_limiter.js');
 const Events = require('events');
+
+dns.setDefaultResultOrder('ipv4first');
+
+const restAgent = new Agent({
+    keepAliveTimeout: 60000,
+    keepAliveMaxTimeout: 300000,
+    pipelining: 1,
+    connect: {
+        keepAlive: true,
+        keepAliveInitialDelay: 10000,
+        noDelay: true
+    }
+});
 
 Events.EventEmitter.defaultMaxListeners = 20;
 startTempCleaner();
@@ -25,30 +40,33 @@ const client = new Client({
     intents: [
         IntentsBitField.Flags.Guilds,
         IntentsBitField.Flags.GuildMembers,
-        IntentsBitField.Flags.GuildModeration,
-        IntentsBitField.Flags.GuildEmojisAndStickers,
-        IntentsBitField.Flags.GuildIntegrations,
-        IntentsBitField.Flags.GuildWebhooks,
-        IntentsBitField.Flags.GuildInvites,
-        IntentsBitField.Flags.GuildVoiceStates,
         IntentsBitField.Flags.GuildPresences,
         IntentsBitField.Flags.GuildMessages,
-        IntentsBitField.Flags.GuildMessageReactions,
         IntentsBitField.Flags.DirectMessages,
-        IntentsBitField.Flags.DirectMessageReactions,
-        IntentsBitField.Flags.MessageContent,
-        IntentsBitField.Flags.GuildScheduledEvents,
-        IntentsBitField.Flags.AutoModerationConfiguration,
-        IntentsBitField.Flags.AutoModerationExecution
+        IntentsBitField.Flags.MessageContent
     ],
     makeCache: Options.cacheWithLimits({
         MessageManager: 25,
         ThreadMemberManager: 0,
         StageInstanceManager: 0,
-        ReactionUserManager: 0
+        ReactionUserManager: 0,
+        VoiceStateManager: 0,
+        GuildScheduledEventManager: 0,
+        AutoModerationRuleManager: 0
     }),
+    sweepers: {
+        messages: {
+            interval: 300,
+            lifetime: 60
+        }
+    },
+    ws: {
+        large_threshold: 50
+    },
     rest: {
-        timeout: 30000
+        agent: restAgent,
+        offset: 0,
+        timeout: 15000
     }
 });
 
@@ -88,6 +106,7 @@ async function onClientReady(readyClient) {
     }
 
     console.log(`Logged in as ${readyClient.user.tag}!`);
+    readyClient.rest.get('/gateway').catch(() => {});
     startTime = Date.now();
     startUptimeUpdater(readyClient, () => startTime);
 
