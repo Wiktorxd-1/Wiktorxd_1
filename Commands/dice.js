@@ -1,8 +1,62 @@
 const { SlashCommandBuilder } = require('discord.js');
 
 function safeEval(expr) {
-    if (!/^[\d+\-*/().\s]+$/.test(expr)) throw new Error('Invalid characters in input.');
-    return eval(expr);
+    if (typeof expr !== 'string') throw new Error('Invalid input');
+    const s = expr.trim();
+    if (!s || s.length > 50) throw new Error('Invalid length');
+    const tokens = s.match(/\d+(?:\.\d+)?|[+\-*/()]/g);
+    if (!tokens) throw new Error('Invalid characters');
+    if (tokens.join('').replace(/\s+/g, '') !== s.replace(/\s+/g, '')) throw new Error('Invalid characters');
+    let pos = 0;
+
+    function consume(expected) {
+        if (tokens[pos] === expected) {
+            pos++;
+            return true;
+        }
+        return false;
+    }
+
+    function parseFactor() {
+        if (consume('(')) {
+            const val = parseExpr();
+            if (!consume(')')) throw new Error();
+            return val;
+        }
+        if (consume('-')) return -parseFactor();
+        if (consume('+')) return parseFactor();
+        const tok = tokens[pos++];
+        const num = parseFloat(tok);
+        if (isNaN(num)) throw new Error();
+        return num;
+    }
+
+    function parseTerm() {
+        let val = parseFactor();
+        while (pos < tokens.length) {
+            if (consume('*')) val *= parseFactor();
+            else if (consume('/')) {
+                const denom = parseFactor();
+                if (denom === 0) throw new Error();
+                val /= denom;
+            } else break;
+        }
+        return val;
+    }
+
+    function parseExpr() {
+        let val = parseTerm();
+        while (pos < tokens.length) {
+            if (consume('+')) val += parseTerm();
+            else if (consume('-')) val -= parseTerm();
+            else break;
+        }
+        return val;
+    }
+
+    const res = parseExpr();
+    if (pos !== tokens.length || !isFinite(res)) throw new Error('Invalid expression');
+    return res;
 }
 
 function clampBigInt(n, min, max) {

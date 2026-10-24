@@ -2,7 +2,7 @@ const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const fs = require('fs').promises;
 const path = require('path');
 const axios = require('axios');
-const { execFile, execSync } = require('child_process');
+const { execFile, execFileSync } = require('child_process');
 const os = require('os');
 require('dotenv').config();
 
@@ -192,7 +192,7 @@ async function getCachedTotalCommits() {
   }
 
   try {
-    const stdout = execSync('git rev-list --count HEAD', { timeout: 1500, encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] });
+    const stdout = execFileSync('git', ['rev-list', '--count', 'HEAD'], { timeout: 1500, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
     const localCount = parseInt(stdout.trim(), 10);
     if (!isNaN(localCount) && localCount > 0) {
       cachedCommits = localCount;
