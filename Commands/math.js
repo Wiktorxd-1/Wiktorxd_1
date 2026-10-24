@@ -409,7 +409,7 @@ if (process.env.MATH_CHILD === '1') {
 
     await interaction.deferReply();
  
-    const child = fork(__filename, [], { env: { ...process.env, MATH_CHILD: '1' }, stdio: ['inherit', 'inherit', 'inherit', 'ipc'] });
+    const child = fork(__filename, [], { env: { ...process.env, MATH_CHILD: '1' }, execArgv: ['--max-old-space-size=48'], stdio: ['inherit', 'inherit', 'inherit', 'ipc'] });
  
     let replied = false;
     let finishTimer = null;

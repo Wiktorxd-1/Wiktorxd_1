@@ -190,7 +190,6 @@ async function catchUpDevMessages(client) {
                 const messages = await channel.messages.fetch({ limit: 30 }).catch(() => new Map());
                 const msgList = [...messages.values()];
                 
-                // Clear any processed messages from cache that are no longer in the last 30 messages of the channel
                 let processed = loadProcessedMessages();
                 const messageIds = msgList.map(m => m.id);
                 let overallChanged = false;
@@ -205,14 +204,12 @@ async function catchUpDevMessages(client) {
                     await saveProcessedMessages(processed);
                 }
 
-                // Process messages from oldest to newest
                 for (const msg of msgList.reverse()) {
                     await handleDevMessage(msg, client);
                 }
             } catch (chanErr) {
                 console.error(`[dev_msgs] Failed to fetch channel messages for catch-up ${channel.id}:`, chanErr.message);
             }
-            // Small delay between channels to avoid rate limit
             await new Promise(resolve => setTimeout(resolve, 500));
         }
         console.log('[dev_msgs] Startup catch-up complete.');
@@ -234,10 +231,8 @@ module.exports = function startDevMsgWatcher(client) {
     }
 
     async function initSelfbotDevMsgs() {
-        // Asynchronously catch up on startup
         catchUpDevMessages(client).catch(err => console.error('[dev_msgs] Catch-up error:', err));
 
-        // Bind real-time gateway listener
         selfbot.on('messageCreate', async (msg) => {
             try {
                 await handleDevMessage(msg, client);

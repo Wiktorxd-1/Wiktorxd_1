@@ -9,9 +9,12 @@ const startOnMember = require('./Utility/Hatches/on_member.js');
 const startUpdatesMonitor = require('./Utility/updates.js');
 const { startHatchesApi } = require('./Utility/hatches_api.js');
 const { initializeDailyPerks, handleDailyPerkInteraction } = require('./Utility/daily_perks.js');
+const { startTempCleaner } = require('./Utility/storage_cleaner.js');
+const { checkRateLimit } = require('./Utility/rate_limiter.js');
 const Events = require('events');
 
 Events.EventEmitter.defaultMaxListeners = 20;
+startTempCleaner();
 
 if (process.env.DEPLOY_COMMANDS === 'true' || process.argv.includes('--deploy')) {
     const { deployCommands } = require('./Utility/deploy-commands.js');
@@ -147,6 +150,16 @@ client.on('warn', info => {
 
 client.on('interactionCreate', async interaction => {
     if (interaction.isChatInputCommand()) {
+        const isOwner = interaction.user.id === process.env.BOT_OWNER_ID;
+        if (!isOwner) {
+            const rl = checkRateLimit(interaction.user.id);
+            if (rl.limited) {
+                return interaction.reply({
+                    content: `⏳ **Slow down!** You can only run up to 3 commands every 10 seconds. Please wait **${rl.retryAfter}s** before trying again.`,
+                    flags: 64
+                });
+            }
+        }
         const command = client.commands.get(interaction.commandName);
 
         if (!command) return;
@@ -171,6 +184,14 @@ client.on('interactionCreate', async interaction => {
 client.on('messageCreate', async message => {
     if (message.author.bot || !message.content.startsWith(Prefix)) return;
 
+    const isOwner = message.author.id === process.env.BOT_OWNER_ID;
+    if (!isOwner) {
+        const rl = checkRateLimit(message.author.id);
+        if (rl.limited) {
+            return message.reply(`⏳ **Slow down!** You can only run up to 3 commands every 10 seconds. Please wait **${rl.retryAfter}s** before trying again.`).catch(() => {});
+        }
+    }
+
     const args = message.content.slice(Prefix.length).trim().split(/ +/);
     const commandName = args.shift().toLowerCase();
 
@@ -187,6 +208,10 @@ client.on('messageCreate', async message => {
 
 process.on('unhandledRejection', (reason, promise) => {
     console.error('Unhandled Promise Rejection:', reason);
+});
+
+process.on('uncaughtException', error => {
+    console.error('Uncaught Exception:', error);
 });
 
 client.login(process.env.DISCORD_TOKEN);

@@ -385,6 +385,7 @@ function convertVideoToGif(inputPath, outputPath) {
     try {
         execFileSync('ffmpeg', [
             '-y',
+            '-threads', '2',
             '-i', inputPath,
             '-vf', 'fps=15,scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse',
             outputPath
@@ -1759,6 +1760,7 @@ function ensureEmbeddableVideo(inputPath, originalFilename, tempDir, maxSizeByte
         try {
             execFileSync('ffmpeg', [
                 '-y',
+                '-threads', '2',
                 '-i', inputPath,
                 '-c', 'copy',
                 '-movflags', '+faststart',
@@ -1773,6 +1775,7 @@ function ensureEmbeddableVideo(inputPath, originalFilename, tempDir, maxSizeByte
 
     const ffmpegArgs = [
         '-y',
+        '-threads', '2',
         '-i', inputPath,
         '-c:v', 'libx264',
         '-pix_fmt', 'yuv420p',
@@ -1829,6 +1832,7 @@ async function downloadFromCDN(urls, isAudio, state, metadata, interaction, temp
                         const safeBitrate = parseInt(state.audioBitrate, 10) || 160;
                         execFileSync('ffmpeg', [
                             '-y',
+                            '-threads', '2',
                             '-i', tempFilePath,
                             '-vn',
                             '-c:a', 'libmp3lame',
@@ -2033,8 +2037,16 @@ module.exports = {
             }
 
             if (i.customId !== 'dl_start') return;
+            if (activeDownloads.has(interaction.user.id)) {
+                return i.reply({
+                    content: '⚠️ **Download in progress:** You already have an active download running. Please wait for it to complete before starting a new one.',
+                    flags: 64
+                });
+            }
+            activeDownloads.add(interaction.user.id);
             collector.stop('started');
 
+            try {
             const isAudio = state.type === 'audio';
             const tempDir = path.join(__dirname, '../Data');
             ensureTempDir(tempDir);
@@ -2073,7 +2085,7 @@ module.exports = {
                         '--format', format,
                         '--bitrate', (format === 'm4a' || format === 'opus') ? 'disable' : `${safeBitrate}k`,
                         '--audio', 'youtube-music', 'youtube',
-                        '--threads', '8',
+                        '--threads', '2',
                         '--dont-filter-results',
                         '--max-retries', '1',
                         '--overwrite', 'force',
@@ -2160,17 +2172,20 @@ module.exports = {
 
                         const estLength = parseInt(res.headers['estimated-content-length'] || res.headers['content-length'], 10) || estimatedTotal;
 
-                        const chunks = [];
+                        let finalFilename = d.filename || 'download';
+                        const rawStreamBasename = `stream_${Date.now()}_${finalFilename.replace(/[^a-zA-Z0-9_.-]/g, '_')}`;
+                        tempFilePath = path.join(tempDir, rawStreamBasename);
+                        const writeStream = fs.createWriteStream(tempFilePath);
                         let loaded = 0;
 
                         await new Promise((resolve, reject) => {
                             res.data.on('data', chunk => {
-                                chunks.push(chunk);
                                 loaded += chunk.length;
 
                                 if (loaded > 300 * 1024 * 1024) {
                                     cancelToken.cancel('FILE_TOO_LARGE');
                                     res.data.destroy();
+                                    writeStream.destroy();
                                     return;
                                 }
 
@@ -2191,32 +2206,35 @@ module.exports = {
                                     }).catch(() => null);
                                 }
                             });
-                            res.data.on('end', () => resolve());
+                            res.data.pipe(writeStream);
+                            writeStream.on('finish', () => resolve());
+                            writeStream.on('error', err => reject(err));
                             res.data.on('error', err => reject(err));
-                            cancelToken.token.promise.then(cancel => reject(cancel));
+                            cancelToken.token.promise.then(cancel => {
+                                writeStream.destroy();
+                                reject(cancel);
+                            });
                         });
 
-                        const buffer = Buffer.concat(chunks);
-                        if (!buffer || buffer.length === 0) {
+                        if (!fs.existsSync(tempFilePath) || fs.statSync(tempFilePath).size === 0) {
                             throw new Error('Downloaded file is empty (0 bytes)');
                         }
 
-                        let finalFilename = d.filename || 'download';
-                        tempFilePath = path.join(tempDir, `temp_${Date.now()}_${finalFilename}`);
-
                         if (state.type === 'image' || state.type === 'slideshow') {
+                            const buffer = fs.readFileSync(tempFilePath);
                             const fmt = state.format || 'png';
                             let processedBuffer = await processImage(buffer, fmt, parseInt(state.quality || '100', 10));
                             const base = finalFilename.lastIndexOf('.') !== -1 ? finalFilename.substring(0, finalFilename.lastIndexOf('.')) : finalFilename;
                             finalFilename = `${base}.${fmt}`;
-                            tempFilePath = path.join(tempDir, `temp_${Date.now()}_${finalFilename}`);
-                            fs.writeFileSync(tempFilePath, processedBuffer);
+                            const processedPath = path.join(tempDir, `temp_${Date.now()}_${finalFilename}`);
+                            fs.writeFileSync(processedPath, processedBuffer);
+                            tryUnlink(tempFilePath);
+                            tempFilePath = processedPath;
                         } else if (state.type === 'audio') {
-                            tempFilePath = path.join(tempDir, `temp_${Date.now()}_${finalFilename}`);
-                            fs.writeFileSync(tempFilePath, buffer);
+                            const audioPath = path.join(tempDir, `temp_${Date.now()}_${finalFilename}`);
+                            fs.renameSync(tempFilePath, audioPath);
+                            tempFilePath = audioPath;
                         } else {
-                            tempFilePath = path.join(tempDir, `temp_${Date.now()}_${finalFilename}`);
-                            fs.writeFileSync(tempFilePath, buffer);
                             const opt = ensureEmbeddableVideo(tempFilePath, finalFilename, tempDir);
                             tempFilePath = opt.path;
                             finalFilename = opt.name;
@@ -2289,6 +2307,9 @@ module.exports = {
                     
                     await new Promise(resolve => setTimeout(resolve, 1500));
                 }
+            }
+            } finally {
+                activeDownloads.delete(interaction.user.id);
             }
         });
 

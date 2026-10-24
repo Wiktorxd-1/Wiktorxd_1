@@ -167,7 +167,6 @@ async function initializeDailyPerks(client) {
         const now = new Date();
         const tomorrow = new Date(now);
         tomorrow.setUTCHours(24, 0, 0, 0);
-        // Add 5 seconds offset to ensure we definitely cross midnight before the next run
         const msUntilMidnight = tomorrow.getTime() - now.getTime() + 5000;
 
         setTimeout(() => initializeDailyPerks(client), msUntilMidnight);

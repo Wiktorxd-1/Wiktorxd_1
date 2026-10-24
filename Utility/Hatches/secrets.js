@@ -84,7 +84,7 @@ async function flushAllBackupsToDatabase() {
                 let secret;
                 try {
                     secret = JSON.parse(line);
-                } catch(e) { continue; } // skip malformed lines
+                } catch(e) { continue; }
 
                 let timestamp = null;
                 if (secret.timestamp) {
@@ -116,7 +116,6 @@ async function flushAllBackupsToDatabase() {
                 await pool.query(insertQuery, [id, name, timestamp, finalImageUrl, totalHatched, rarity, hatchedBy, discordUserId]);
             }
 
-            // Only clear the file if all inserts succeed
             await fs.promises.writeFile(filePath, '', 'utf8');
             console.log(`[Database] ${path.basename(filePath)} successfully flushed to database and cleared locally.`);
         } catch (err) {
@@ -529,11 +528,9 @@ async function appendSecretToFile(secret) {
         inMemoryCache.push(minimalSecret);
         if (inMemoryCache.length > 10000) inMemoryCache.shift();
 
-        // Always ensure the Data directory exists before writing state files
         await ensureDataDirectoryExists();
 
         const backupCache = inMemoryCache.slice(-2000);
-        // Write to a temp file first, then rename atomically to prevent partial writes from corrupting state
         const tmpPath = EarlierSecretsPath + '.tmp';
         fs.promises.writeFile(tmpPath, JSON.stringify(backupCache, null, 2), 'utf8')
             .then(() => fs.promises.rename(tmpPath, EarlierSecretsPath))
@@ -571,7 +568,6 @@ async function appendSecretToFile(secret) {
     } catch (e) {
         console.error('[Database] Error appending secret:', e);
         console.log('[Database] Appending secret to local backup file due to DB failure...');
-        // Append to backup — never overwrite it, so no data is lost even on repeated failures
         fs.promises.appendFile(BackupPath, JSON.stringify(secret) + '\n', 'utf8')
             .catch(err => {
                 console.error('[Database] Error writing to backup file:', err);
@@ -895,7 +891,6 @@ async function startSecretsWatcher(discordClient) {
         console.warn("[Secrets] Failed to fetch sending channel:", e.message);
     }
 
-    // Wait until selfbot is ready before initiating catch-up and event binding
     if (selfbot.readyAt) {
         initSelfbotSecrets();
     } else {
@@ -925,7 +920,6 @@ async function startSecretsWatcher(discordClient) {
             if (e.code !== 'ENOENT') console.error(`[Startup] Error reading ${last_id_2}:`, e);
         }
 
-        // Perform Catch-up scans on startup
         try {
             await catchUpChannel(selfbot, discordClient, '791552625866833960', afterId, 1);
             await catchUpChannel(selfbot, discordClient, '1453166507331944600', afterId2, 2);
@@ -935,7 +929,6 @@ async function startSecretsWatcher(discordClient) {
 
         console.log('[Secrets] Catch-up finished. Listening to real-time events...');
 
-        // Bind real-time event listener
         selfbot.on('messageCreate', async (msg) => {
             if (!isHatchesEnabled()) return;
 
@@ -996,7 +989,6 @@ module.exports.searchSecretsDB = async function(discordId, robloxUsername) {
         const nameToImage = new Map();
         
         for (let row of rows) {
-            // Reconstruct ISO timestamp as done by iterateAllEntries
             if (row.timestamp) {
                 row.timestamp = new Date(row.timestamp).toISOString().replace(/\.\d{3}Z$/, '');
             }

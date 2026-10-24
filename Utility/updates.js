@@ -172,7 +172,6 @@ async function checkForChanges(discordClient = null) {
     const oldList = await loadJsonFile("last_event_data.json");
     const blacklist = await loadJsonFile("event_blacklist.json");
     
-    // First run initialization: do not post notifications, just persist state
     if (oldList.length === 0) {
         await saveJsonFile("last_event_data.json", currentApiData);
         return;
@@ -239,7 +238,6 @@ async function checkForChanges(discordClient = null) {
     }
     for (const [eid, oldEvent] of oldMap.entries()) {
         if (!curMap.has(eid) && !blacklist.includes(eid)) {
-            // Track consecutive missing times to debounce flakiness
             const count = (missingEventsCount.get(eid) || 0) + 1;
             missingEventsCount.set(eid, count);
 
@@ -254,12 +252,10 @@ async function checkForChanges(discordClient = null) {
                 missingEventsCount.delete(eid);
             }
         } else {
-            // Reappeared or still present: reset counter
             missingEventsCount.delete(eid);
         }
     }
     
-    // Cleanup missing counts for events no longer in old list
     for (const eid of missingEventsCount.keys()) {
         if (!oldMap.has(eid)) {
             missingEventsCount.delete(eid);

@@ -97,7 +97,6 @@ function getRandomUA() {
     return UA_LIST[Math.floor(Math.random() * UA_LIST.length)];
 }
 
-// 1. DuckDuckGo Lite Search Provider (Highly accurate, no spam)
 async function searchDuckDuckGo(query, totalWanted = 10, pageOffset = 0) {
     const res = await axios.post("https://lite.duckduckgo.com/lite/", `q=${encodeURIComponent(query)}&s=${pageOffset}&kp=-2`, {
         headers: {
@@ -133,7 +132,6 @@ async function searchDuckDuckGo(query, totalWanted = 10, pageOffset = 0) {
     return results;
 }
 
-// 2. Google Custom Search API (if key configured) or Scraping
 async function searchGoogle(query, totalWanted = 10, pageOffset = 0) {
     const cfg = await loadGoogleConfig();
     const apiKey = cfg.apiKey || process.env.GOOGLE_SEARCH_API_KEY || process.env.GOOGLE_API_KEY;
@@ -164,7 +162,6 @@ async function searchGoogle(query, totalWanted = 10, pageOffset = 0) {
     return [];
 }
 
-// 3. Wikipedia Search API
 async function searchWikipedia(query, totalWanted = 10) {
     const res = await axios.get('https://en.wikipedia.org/w/api.php', {
         params: {
@@ -191,7 +188,6 @@ async function searchWikipedia(query, totalWanted = 10) {
     });
 }
 
-// Multi-provider orchestrator
 async function performSearch(query, totalWanted = 10, pageOffset = 0) {
     const quotaCheck = await loadQuota();
     if (isFinite(quotaCheck.limit) && quotaCheck.used + 1 > quotaCheck.limit) {
@@ -200,14 +196,11 @@ async function performSearch(query, totalWanted = 10, pageOffset = 0) {
 
     let items = [];
 
-    // 1. Try Google API if configured
     try {
         items = await searchGoogle(query, totalWanted, pageOffset);
     } catch (e) {
-        // Continue to DDG
     }
 
-    // 2. Try DuckDuckGo Lite (accurate, no spam)
     if (!items || items.length === 0) {
         try {
             items = await searchDuckDuckGo(query, totalWanted, pageOffset);
@@ -216,7 +209,6 @@ async function performSearch(query, totalWanted = 10, pageOffset = 0) {
         }
     }
 
-    // 3. Fallback to Wikipedia if no items found
     if (!items || items.length === 0) {
         try {
             items = await searchWikipedia(query, totalWanted);
