@@ -163,6 +163,9 @@ All commands export `data` (SlashCommandBuilder) and/or `prefixData` with an `as
 - **`speechify.js`**: Canvas-based speech bubble meme overlay generator.
 - **`stats.js`**: Bot process diagnostics (memory RSS/heap, process uptime, commit count via GitHub API, OS load).
   - Uses background rolling CPU usage tracker (0ms sampling latency) and direct reply.
+- **`exchange.js`**: Real-time currency exchange converter powered by Google Finance.
+  - Interactive slash command `/exchange` with dynamic autocomplete choices for 60+ world fiat and top cryptocurrencies.
+  - Supports custom amounts, automatic inverse rate calculation, persistent `https.Agent` connection pooling, and fallback prefix usage (`?exchange [amount] <from> <to>`).
 - **`remindme.js`**: Sets persistent user reminders with human-readable time strings (`10m`, `2h`, `1d`).
 
 ### Moderation & Server Management

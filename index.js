@@ -169,6 +169,18 @@ client.on('warn', info => {
 });
 
 client.on('interactionCreate', async interaction => {
+    if (interaction.isAutocomplete()) {
+        const command = client.commands.get(interaction.commandName);
+        if (command && typeof command.autocomplete === 'function') {
+            try {
+                await command.autocomplete(interaction, client);
+            } catch (error) {
+                console.error(`Error handling autocomplete for /${interaction.commandName}:`, error);
+            }
+        }
+        return;
+    }
+
     if (interaction.isChatInputCommand()) {
         interaction.receivedAt = Date.now();
         const isOwner = interaction.user.id === process.env.BOT_OWNER_ID;
