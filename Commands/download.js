@@ -13,7 +13,7 @@ const fs = require('fs');
 const path = require('path');
 const sharp = require('sharp');
 const cheerio = require('cheerio');
-const { execSync } = require('child_process');
+const { execSync, execFileSync, execFile } = require('child_process');
 
 const COBALT_INSTANCES = [
     'https://cobalt-api.wiktorxd-1.dev/',
@@ -113,11 +113,21 @@ function getMediaFileName(urlStr, contentType = '') {
 }
 
 function probeMediaDuration(urlStr) {
+    if (!urlStr || typeof urlStr !== 'string') return 0;
     try {
-        const out = execSync(
-            `ffprobe -user_agent "${UA_BROWSER}" -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${urlStr}"`,
-            { timeout: 4500 }
-        ).toString().trim();
+        const u = new URL(urlStr);
+        if (u.protocol !== 'http:' && u.protocol !== 'https:') return 0;
+    } catch {
+        return 0;
+    }
+    try {
+        const out = execFileSync('ffprobe', [
+            '-user_agent', UA_BROWSER,
+            '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            urlStr
+        ], { timeout: 4500, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
         const num = parseFloat(out);
         if (!isNaN(num) && num > 0) return Math.round(num);
     } catch { }
@@ -358,7 +368,13 @@ async function scrapeGenericPage(url) {
 
 function videoHasAudio(filePath) {
     try {
-        const out = execSync(`ffprobe -v error -select_streams a -show_entries stream=codec_type -of csv=p=0 "${filePath}"`).toString().trim();
+        const out = execFileSync('ffprobe', [
+            '-v', 'error',
+            '-select_streams', 'a',
+            '-show_entries', 'stream=codec_type',
+            '-of', 'csv=p=0',
+            filePath
+        ], { timeout: 8000, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
         return out.includes('audio');
     } catch {
         return false;
@@ -367,7 +383,12 @@ function videoHasAudio(filePath) {
 
 function convertVideoToGif(inputPath, outputPath) {
     try {
-        execSync(`ffmpeg -y -i "${inputPath}" -vf "fps=15,scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse" "${outputPath}"`);
+        execFileSync('ffmpeg', [
+            '-y',
+            '-i', inputPath,
+            '-vf', 'fps=15,scale=480:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse',
+            outputPath
+        ], { timeout: 60000, stdio: 'ignore' });
         return true;
     } catch {
         return false;
@@ -436,7 +457,14 @@ function normalizeUrl(url) {
 }
 
 function isSpotifyUrl(url) {
-    return /open\.spotify\.com\/(track|album|playlist|episode|show)\//i.test(url);
+    if (!url || typeof url !== 'string') return false;
+    try {
+        const u = new URL(url);
+        if (u.hostname !== 'open.spotify.com' && u.hostname !== 'spotify.com') return false;
+        return /^\/(track|album|playlist|episode|show)\/[a-zA-Z0-9]+$/i.test(u.pathname);
+    } catch {
+        return false;
+    }
 }
 
 async function fetchSpotifyMetadata(url) {
@@ -1692,7 +1720,13 @@ function ensureEmbeddableVideo(inputPath, originalFilename, tempDir, maxSizeByte
     let durationSec = 0;
 
     try {
-        const vInfo = execSync(`ffprobe -v error -select_streams v:0 -show_entries stream=codec_name,pix_fmt,duration -of json "${inputPath}"`).toString();
+        const vInfo = execFileSync('ffprobe', [
+            '-v', 'error',
+            '-select_streams', 'v:0',
+            '-show_entries', 'stream=codec_name,pix_fmt,duration',
+            '-of', 'json',
+            inputPath
+        ], { timeout: 8000, stdio: ['ignore', 'pipe', 'ignore'] }).toString();
         const vParsed = JSON.parse(vInfo);
         if (vParsed.streams && vParsed.streams[0]) {
             vCodec = vParsed.streams[0].codec_name;
@@ -1702,7 +1736,13 @@ function ensureEmbeddableVideo(inputPath, originalFilename, tempDir, maxSizeByte
     } catch { }
 
     try {
-        const aInfo = execSync(`ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of json "${inputPath}"`).toString();
+        const aInfo = execFileSync('ffprobe', [
+            '-v', 'error',
+            '-select_streams', 'a:0',
+            '-show_entries', 'stream=codec_name',
+            '-of', 'json',
+            inputPath
+        ], { timeout: 8000, stdio: ['ignore', 'pipe', 'ignore'] }).toString();
         const aParsed = JSON.parse(aInfo);
         if (aParsed.streams && aParsed.streams[0]) {
             aCodec = aParsed.streams[0].codec_name;
@@ -1717,7 +1757,13 @@ function ensureEmbeddableVideo(inputPath, originalFilename, tempDir, maxSizeByte
 
     if (isH264 && isYuv420p && isAacOrNone && isUnderLimit) {
         try {
-            execSync(`ffmpeg -y -i "${inputPath}" -c copy -movflags +faststart "${outputPath}"`);
+            execFileSync('ffmpeg', [
+                '-y',
+                '-i', inputPath,
+                '-c', 'copy',
+                '-movflags', '+faststart',
+                outputPath
+            ], { timeout: 30000, stdio: 'ignore' });
             if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
                 tryUnlink(inputPath);
                 return { path: outputPath, name: finalFilename };
@@ -1725,20 +1771,28 @@ function ensureEmbeddableVideo(inputPath, originalFilename, tempDir, maxSizeByte
         } catch { }
     }
 
-    let scaleFilter = '';
-    let videoBitrateArg = '-crf 23';
+    const ffmpegArgs = [
+        '-y',
+        '-i', inputPath,
+        '-c:v', 'libx264',
+        '-pix_fmt', 'yuv420p',
+        '-preset', 'veryfast'
+    ];
     if (!isUnderLimit && durationSec > 0 && durationSec < 600) {
         const targetBits = (maxSizeBytes * 8 * 0.90);
         const totalKbps = Math.floor(targetBits / durationSec / 1000);
         const vKbps = Math.max(200, totalKbps - 128);
-        videoBitrateArg = `-b:v ${vKbps}k -maxrate ${Math.floor(vKbps * 1.5)}k -bufsize ${vKbps * 2}k`;
+        ffmpegArgs.push('-b:v', `${vKbps}k`, '-maxrate', `${Math.floor(vKbps * 1.5)}k`, '-bufsize', `${vKbps * 2}k`);
         if (vKbps < 700) {
-            scaleFilter = '-vf "scale=\'min(1280,iw)\':-2"';
+            ffmpegArgs.push('-vf', "scale='min(1280,iw)':-2");
         }
+    } else {
+        ffmpegArgs.push('-crf', '23');
     }
+    ffmpegArgs.push('-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', outputPath);
 
     try {
-        execSync(`ffmpeg -y -i "${inputPath}" -c:v libx264 -pix_fmt yuv420p -preset veryfast ${videoBitrateArg} ${scaleFilter} -c:a aac -b:a 128k -movflags +faststart "${outputPath}"`);
+        execFileSync('ffmpeg', ffmpegArgs, { timeout: 120000, stdio: 'ignore' });
         if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
             tryUnlink(inputPath);
             return { path: outputPath, name: finalFilename };
@@ -1772,7 +1826,15 @@ async function downloadFromCDN(urls, isAudio, state, metadata, interaction, temp
                     const audioFilename = urls.length > 1 ? `${safeTitle}_${currentIdx + 1}.mp3` : `${safeTitle}.mp3`;
                     const audioPath = path.join(tempDir, `temp_${Date.now()}_${currentIdx}_${audioFilename}`);
                     try {
-                        execSync(`ffmpeg -y -i "${tempFilePath}" -vn -c:a libmp3lame -b:a ${state.audioBitrate || 160}k "${audioPath}"`);
+                        const safeBitrate = parseInt(state.audioBitrate, 10) || 160;
+                        execFileSync('ffmpeg', [
+                            '-y',
+                            '-i', tempFilePath,
+                            '-vn',
+                            '-c:a', 'libmp3lame',
+                            '-b:a', `${safeBitrate}k`,
+                            audioPath
+                        ], { timeout: 60000, stdio: 'ignore' });
                         tryUnlink(tempFilePath);
                         return { path: audioPath, name: audioFilename };
                     } catch { }
@@ -1980,13 +2042,14 @@ module.exports = {
             if (metadata.isSpotify) {
                 await i.update({ content: 'Downloading from Spotify... <a:loading:1524146146937667784>', embeds: [], components: [] });
                 const spotdlPath = '/home/container/.local/bin/spotdl';
-                const { exec } = require('child_process');
                 const util = require('util');
-                const execAsync = util.promisify(exec);
+                const execFileAsync = util.promisify(execFile);
                 
                 if (!fs.existsSync(spotdlPath)) {
                     await interaction.editReply({ content: 'Installing required dependencies (this will take a moment)... <a:loading:1524146146937667784>', embeds: [], components: [] });
                     try {
+                        const { exec } = require('child_process');
+                        const execAsync = util.promisify(exec);
                         await execAsync('curl -sS https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py && python3 /tmp/get-pip.py --break-system-packages && python3 -m pip install spotdl --break-system-packages', { timeout: 180000 });
                     } catch (e) {
                         console.error('Failed to install spotdl:', e);
@@ -2002,11 +2065,21 @@ module.exports = {
                 ensureTempDir(spotifyTrackDir);
                 try {
                     const format = (state.format === 'm4a' || state.format === 'opus') ? state.format : 'mp3';
-                    const bitrateArg = (format === 'm4a' || format === 'opus') ? '--bitrate disable' : `--bitrate ${state.audioBitrate || 160}k`;
-                    await execAsync(
-                        `${spotdlPath} download "${metadata.spotifyUrl}" --output "${spotifyTrackDir}" --format ${format} ${bitrateArg} --audio youtube-music youtube --threads 8 --dont-filter-results --max-retries 1 --overwrite force --log-level ERROR`,
-                        { timeout: 180000 }
-                    );
+                    const safeBitrate = parseInt(state.audioBitrate, 10) || 160;
+                    const spotdlArgs = [
+                        'download',
+                        metadata.spotifyUrl,
+                        '--output', spotifyTrackDir,
+                        '--format', format,
+                        '--bitrate', (format === 'm4a' || format === 'opus') ? 'disable' : `${safeBitrate}k`,
+                        '--audio', 'youtube-music', 'youtube',
+                        '--threads', '8',
+                        '--dont-filter-results',
+                        '--max-retries', '1',
+                        '--overwrite', 'force',
+                        '--log-level', 'ERROR'
+                    ];
+                    await execFileAsync(spotdlPath, spotdlArgs, { timeout: 180000 });
                     const audioFiles = fs.readdirSync(spotifyTrackDir).filter(f => f.endsWith(`.${format}`) || f.endsWith('.mp3') || f.endsWith('.m4a') || f.endsWith('.opus'));
                     if (!audioFiles.length) throw new Error('spotdl finished but no audio file found in output directory');
                     audioFiles.sort((a, b) => fs.statSync(path.join(spotifyTrackDir, b)).mtimeMs - fs.statSync(path.join(spotifyTrackDir, a)).mtimeMs);
