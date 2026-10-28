@@ -19,14 +19,14 @@ const activeDownloads = new Set();
 
 const COBALT_INSTANCES = [
     'https://cobalt-api.wiktorxd-1.dev/',
-    'https://api-cobalt.eversiege.network/',
-    'https://cobalt.canine.tools/',
     'https://api.cobalt.liubquanti.click/'
 ];
 
-async function requestCobalt(payload) {
+async function requestCobalt(payload, attemptNumber = 1) {
     let lastError = null;
-    for (let api of COBALT_INSTANCES) {
+    const startIndex = (attemptNumber - 1) % COBALT_INSTANCES.length;
+    const orderedInstances = COBALT_INSTANCES.slice(startIndex).concat(COBALT_INSTANCES.slice(0, startIndex));
+    for (let api of orderedInstances) {
         try {
             const res = await axios.post(api, payload, {
                 headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
@@ -2152,7 +2152,7 @@ module.exports = {
                 attempt++;
                 try {
                     console.error(`Cobalt download attempt ${attempt}/${maxAttempts}`);
-                    const { data: d } = await requestCobalt(payload);
+                    const { data: d } = await requestCobalt(payload, attempt);
 
                     if (d?.status === 'picker') {
                         if (isAudio && !d.audio) throw new Error('No audio track available for this slideshow.');
@@ -2169,7 +2169,7 @@ module.exports = {
                         
                         const res = await axios({
                             url: d.url, method: 'GET', responseType: 'stream', maxRedirects: 10,
-                            timeout: 180000, cancelToken: cancelToken.token
+                            timeout: 15000, cancelToken: cancelToken.token
                         });
                         if (res.status < 200 || res.status >= 300) throw new Error(`Server returned ${res.status}`);
 
@@ -2182,26 +2182,41 @@ module.exports = {
                         let loaded = 0;
 
                         await new Promise((resolve, reject) => {
+                            let stallTimer = null;
+                            const resetStallTimer = () => {
+                                if (stallTimer) clearTimeout(stallTimer);
+                                stallTimer = setTimeout(() => {
+                                    cancelToken.cancel('STREAM_STALLED');
+                                    res.data.destroy();
+                                    writeStream.destroy();
+                                    reject(new Error('Download stream stalled: no data received for 10s'));
+                                }, 10000);
+                            };
+                            resetStallTimer();
+
                             res.data.on('data', chunk => {
+                                resetStallTimer();
                                 loaded += chunk.length;
 
                                 if (loaded > 300 * 1024 * 1024) {
+                                    clearTimeout(stallTimer);
                                     cancelToken.cancel('FILE_TOO_LARGE');
                                     res.data.destroy();
                                     writeStream.destroy();
                                     return;
                                 }
 
-                                const pct = Math.min(99, Math.floor((loaded / estLength) * 100));
+                                const safeEstLength = (estLength && estLength > 0) ? estLength : Math.max(loaded, 10 * 1024 * 1024);
+                                const pct = Math.min(99, Math.max(1, Math.floor((loaded / safeEstLength) * 100)));
                                 const step = Math.min(20, Math.floor(pct / 5));
                                 const now = Date.now();
-                                if (step > lastStep && now - lastEditTime > 1500) {
+                                if (step > lastStep && now - lastEditTime > 2000) {
                                     lastStep = step;
                                     lastEditTime = now;
                                     const filled = '█'.repeat(step);
                                     const empty = '░'.repeat(20 - step);
                                     const loadedMB = (loaded / 1048576).toFixed(1);
-                                    const totalMB = (estLength / 1048576).toFixed(1);
+                                    const totalMB = (safeEstLength / 1048576).toFixed(1);
                                     interaction.editReply({
                                         content: `Downloading file... (${loadedMB} MB / ${totalMB} MB)\n\`${filled}${empty}\` **${pct}%**`,
                                         embeds: [],
@@ -2210,10 +2225,20 @@ module.exports = {
                                 }
                             });
                             res.data.pipe(writeStream);
-                            writeStream.on('finish', () => resolve());
-                            writeStream.on('error', err => reject(err));
-                            res.data.on('error', err => reject(err));
+                            writeStream.on('finish', () => {
+                                clearTimeout(stallTimer);
+                                resolve();
+                            });
+                            writeStream.on('error', err => {
+                                clearTimeout(stallTimer);
+                                reject(err);
+                            });
+                            res.data.on('error', err => {
+                                clearTimeout(stallTimer);
+                                reject(err);
+                            });
                             cancelToken.token.promise.then(cancel => {
+                                clearTimeout(stallTimer);
                                 writeStream.destroy();
                                 reject(cancel);
                             });
@@ -2307,7 +2332,15 @@ module.exports = {
                         await interaction.editReply({ content: `❌ Failed to download after ${maxAttempts} attempts: \`${errMsg}\``, embeds: [], components: [], files: [] });
                         return;
                     }
-                    
+
+                    if (tempFilePath && fs.existsSync(tempFilePath)) {
+                        tryUnlink(tempFilePath);
+                    }
+                    await interaction.editReply({
+                        content: `Download interrupted (${e.message}), retrying (attempt ${attempt + 1}/${maxAttempts})... <a:loading:1524146146937667784>`,
+                        embeds: [],
+                        components: []
+                    }).catch(() => null);
                     await new Promise(resolve => setTimeout(resolve, 1500));
                 }
             }
