@@ -15,6 +15,8 @@ const sharp = require('sharp');
 const cheerio = require('cheerio');
 const { execSync, execFileSync, execFile } = require('child_process');
 
+const activeDownloads = new Set();
+
 const COBALT_INSTANCES = [
     'https://cobalt-api.wiktorxd-1.dev/',
     'https://api-cobalt.eversiege.network/',
@@ -2011,10 +2013,11 @@ module.exports = {
         const collector = replyMsg.createMessageComponentCollector({ time: 300_000 });
 
         collector.on('collect', async i => {
-            if (i.user.id !== interaction.user.id) {
-                await i.reply({ content: 'You did not run this command', flags: MessageFlags.Ephemeral });
-                return;
-            }
+            try {
+                if (i.user.id !== interaction.user.id) {
+                    await i.reply({ content: 'You did not run this command', flags: MessageFlags.Ephemeral });
+                    return;
+                }
 
             const stateMap = {
                 dl_to_advanced: () => { state.view = 'advanced'; },
@@ -2310,6 +2313,14 @@ module.exports = {
             }
             } finally {
                 activeDownloads.delete(interaction.user.id);
+            }
+            } catch (err) {
+                console.error('Error handling download interaction:', err);
+                try {
+                    if (!i.replied && !i.deferred) {
+                        await i.reply({ content: '❌ An error occurred processing your request.', flags: 64 });
+                    }
+                } catch {}
             }
         });
 
