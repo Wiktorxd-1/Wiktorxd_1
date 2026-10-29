@@ -20,8 +20,7 @@ const execFileAsync = util.promisify(execFile);
 const activeDownloads = new Set();
 
 const COBALT_INSTANCES = [
-    'https://cobalt-api.wiktorxd-1.dev/',
-    'https://api.cobalt.liubquanti.click/'
+    'https://cobalt-api.wiktorxd-1.dev/'
 ];
 
 async function requestCobalt(payload, attemptNumber = 1) {
@@ -32,7 +31,7 @@ async function requestCobalt(payload, attemptNumber = 1) {
         try {
             const res = await axios.post(api, payload, {
                 headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
-                timeout: 12000
+                timeout: 15000
             });
             if (res.data && res.data.status === 'error') {
                 throw new Error(res.data.error?.code || 'unknown_error');
@@ -2091,7 +2090,7 @@ module.exports = {
             }
 
             let attempt = 0;
-            const maxAttempts = 3;
+            const maxAttempts = 4;
             let tempFilePath;
 
             while (attempt < maxAttempts) {
@@ -2113,9 +2112,20 @@ module.exports = {
                         let lastEditTime = 0;
                         const estimatedTotal = estimateFileSize(metadata.durationSeconds, state, url) || 100 * 1024 * 1024;
                         
+                        await new Promise(resolve => setTimeout(resolve, 800));
+
                         const res = await axios({
-                            url: d.url, method: 'GET', responseType: 'stream', maxRedirects: 10,
-                            timeout: 15000, cancelToken: cancelToken.token
+                            url: d.url,
+                            method: 'GET',
+                            responseType: 'stream',
+                            maxRedirects: 10,
+                            timeout: 25000,
+                            cancelToken: cancelToken.token,
+                            headers: {
+                                'User-Agent': UA_BROWSER,
+                                'Accept': '*/*',
+                                'Accept-Encoding': 'identity'
+                            }
                         });
                         if (res.status < 200 || res.status >= 300) throw new Error(`Server returned ${res.status}`);
 
@@ -2135,8 +2145,8 @@ module.exports = {
                                     cancelToken.cancel('STREAM_STALLED');
                                     res.data.destroy();
                                     writeStream.destroy();
-                                    reject(new Error('Download stream stalled: no data received for 10s'));
-                                }, 10000);
+                                    reject(new Error('Download stream stalled: no data received for 35s'));
+                                }, 35000);
                             };
                             resetStallTimer();
 
@@ -2300,7 +2310,7 @@ module.exports = {
                         embeds: [],
                         components: []
                     }).catch(() => null);
-                    await new Promise(resolve => setTimeout(resolve, 1500));
+                    await new Promise(resolve => setTimeout(resolve, 3000));
                 }
             }
             } finally {
