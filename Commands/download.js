@@ -1709,7 +1709,7 @@ function buildEmbed(metadata, state) {
     return embed;
 }
 
-async function ensureEmbeddableVideo(inputPath, originalFilename, tempDir, maxSizeBytes = 24 * 1024 * 1024) {
+async function ensureEmbeddableVideo(inputPath, originalFilename, tempDir) {
     const cleanBase = (originalFilename || 'video')
         .replace(/\.[^/.]+$/, '')
         .replace(/[",;`$\r\n\t]/g, '')
@@ -1719,85 +1719,32 @@ async function ensureEmbeddableVideo(inputPath, originalFilename, tempDir, maxSi
     const safeOutputBasename = `embed_${Date.now()}_${cleanBase.replace(/[^a-zA-Z0-9_-]/g, '_')}.mp4`;
     const outputPath = path.join(tempDir, safeOutputBasename);
 
-    let vCodec = null;
-    let aCodec = null;
-    let pixFmt = null;
-    let durationSec = 0;
-
     try {
-        const { stdout: vInfo } = await execFileAsync('ffprobe', [
-            '-v', 'error',
-            '-select_streams', 'v:0',
-            '-show_entries', 'stream=codec_name,pix_fmt,duration',
-            '-of', 'json',
-            inputPath
+        await execFileAsync('ffmpeg', [
+            '-y',
+            '-threads', '2',
+            '-i', inputPath,
+            '-c', 'copy',
+            '-movflags', '+faststart',
+            outputPath
         ], { timeout: 8000 });
-        const vParsed = JSON.parse(vInfo);
-        if (vParsed.streams && vParsed.streams[0]) {
-            vCodec = vParsed.streams[0].codec_name;
-            pixFmt = vParsed.streams[0].pix_fmt;
-            durationSec = parseFloat(vParsed.streams[0].duration) || 0;
+        if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
+            tryUnlink(inputPath);
+            return { path: outputPath, name: finalFilename };
         }
     } catch { }
 
     try {
-        const { stdout: aInfo } = await execFileAsync('ffprobe', [
-            '-v', 'error',
-            '-select_streams', 'a:0',
-            '-show_entries', 'stream=codec_name',
-            '-of', 'json',
-            inputPath
-        ], { timeout: 8000 });
-        const aParsed = JSON.parse(aInfo);
-        if (aParsed.streams && aParsed.streams[0]) {
-            aCodec = aParsed.streams[0].codec_name;
-        }
-    } catch { }
-
-    const inSize = fs.existsSync(inputPath) ? fs.statSync(inputPath).size : 0;
-    const isH264 = vCodec === 'h264';
-    const isYuv420p = pixFmt === 'yuv420p';
-    const isAacOrNone = !aCodec || aCodec === 'aac';
-    const isUnderLimit = inSize > 0 && inSize <= maxSizeBytes;
-
-    if (isH264 && isYuv420p && isAacOrNone && isUnderLimit) {
-        try {
-            await execFileAsync('ffmpeg', [
-                '-y',
-                '-threads', '2',
-                '-i', inputPath,
-                '-c', 'copy',
-                '-movflags', '+faststart',
-                outputPath
-            ], { timeout: 30000 });
-            if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
-                tryUnlink(inputPath);
-                return { path: outputPath, name: finalFilename };
-            }
-        } catch { }
-    }
-
-    const ffmpegArgs = [
-        '-y',
-        '-threads', '2',
-        '-i', inputPath,
-        '-c:v', 'libx264',
-        '-pix_fmt', 'yuv420p',
-        '-preset', 'ultrafast'
-    ];
-    if (!isUnderLimit && durationSec > 0 && durationSec < 600) {
-        const targetBits = (maxSizeBytes * 8 * 0.90);
-        const totalKbps = Math.floor(targetBits / durationSec / 1000);
-        const vKbps = Math.max(200, totalKbps - 128);
-        ffmpegArgs.push('-b:v', `${vKbps}k`, '-maxrate', `${Math.floor(vKbps * 1.5)}k`, '-bufsize', `${vKbps * 2}k`);
-        ffmpegArgs.push('-vf', "scale='min(1280,iw)':-2");
-    } else {
-        ffmpegArgs.push('-crf', '26');
-    }
-    ffmpegArgs.push('-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', outputPath);
-
-    try {
-        await execFileAsync('ffmpeg', ffmpegArgs, { timeout: 45000 });
+        await execFileAsync('ffmpeg', [
+            '-y',
+            '-threads', '2',
+            '-i', inputPath,
+            '-c:v', 'copy',
+            '-c:a', 'aac',
+            '-b:a', '128k',
+            '-movflags', '+faststart',
+            outputPath
+        ], { timeout: 10000 });
         if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
             tryUnlink(inputPath);
             return { path: outputPath, name: finalFilename };
@@ -2251,13 +2198,6 @@ module.exports = {
                             throw new Error('Downloaded file is empty (0 bytes)');
                         }
 
-                        const downloadedSizeMB = (fs.statSync(tempFilePath).size / 1048576).toFixed(1);
-                        await interaction.editReply({
-                            content: `Downloading file... (${downloadedSizeMB} MB / ${downloadedSizeMB} MB)\n\`${'█'.repeat(20)}\` **100%**\n\nProcessing video for Discord... <a:loading:1524146146937667784>`,
-                            embeds: [],
-                            components: []
-                        }).catch(() => null);
-
                         if (state.type === 'image' || state.type === 'slideshow') {
                             const buffer = fs.readFileSync(tempFilePath);
                             const fmt = state.format || 'png';
@@ -2280,11 +2220,11 @@ module.exports = {
 
                         const actualSize = fs.statSync(tempFilePath).size;
                         const totalSizeMB = (actualSize / 1048576).toFixed(1);
-                        const uploadLimit = 300 * 1024 * 1024;
+                        const uploadLimit = 100 * 1024 * 1024;
 
                         if (actualSize > uploadLimit) {
                             await interaction.editReply({
-                                content: `❌ **File is too large (${totalSizeMB} MB) to upload directly (> 300 MB).**\nPlease download it directly here:`,
+                                content: `⚠️ **File is too large for Discord to display (${totalSizeMB} MB > 100 MB)**\nPlease download it directly here:`,
                                 embeds: [],
                                 components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setLabel('Download File').setStyle(ButtonStyle.Link).setURL(d.url))],
                                 files: []
