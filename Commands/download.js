@@ -14,6 +14,8 @@ const path = require('path');
 const sharp = require('sharp');
 const cheerio = require('cheerio');
 const { execSync, execFileSync, execFile } = require('child_process');
+const util = require('util');
+const execFileAsync = util.promisify(execFile);
 
 const activeDownloads = new Set();
 
@@ -1707,7 +1709,7 @@ function buildEmbed(metadata, state) {
     return embed;
 }
 
-function ensureEmbeddableVideo(inputPath, originalFilename, tempDir, maxSizeBytes = 24 * 1024 * 1024) {
+async function ensureEmbeddableVideo(inputPath, originalFilename, tempDir, maxSizeBytes = 24 * 1024 * 1024) {
     const cleanBase = (originalFilename || 'video')
         .replace(/\.[^/.]+$/, '')
         .replace(/[",;`$\r\n\t]/g, '')
@@ -1723,13 +1725,13 @@ function ensureEmbeddableVideo(inputPath, originalFilename, tempDir, maxSizeByte
     let durationSec = 0;
 
     try {
-        const vInfo = execFileSync('ffprobe', [
+        const { stdout: vInfo } = await execFileAsync('ffprobe', [
             '-v', 'error',
             '-select_streams', 'v:0',
             '-show_entries', 'stream=codec_name,pix_fmt,duration',
             '-of', 'json',
             inputPath
-        ], { timeout: 8000, stdio: ['ignore', 'pipe', 'ignore'] }).toString();
+        ], { timeout: 8000 });
         const vParsed = JSON.parse(vInfo);
         if (vParsed.streams && vParsed.streams[0]) {
             vCodec = vParsed.streams[0].codec_name;
@@ -1739,13 +1741,13 @@ function ensureEmbeddableVideo(inputPath, originalFilename, tempDir, maxSizeByte
     } catch { }
 
     try {
-        const aInfo = execFileSync('ffprobe', [
+        const { stdout: aInfo } = await execFileAsync('ffprobe', [
             '-v', 'error',
             '-select_streams', 'a:0',
             '-show_entries', 'stream=codec_name',
             '-of', 'json',
             inputPath
-        ], { timeout: 8000, stdio: ['ignore', 'pipe', 'ignore'] }).toString();
+        ], { timeout: 8000 });
         const aParsed = JSON.parse(aInfo);
         if (aParsed.streams && aParsed.streams[0]) {
             aCodec = aParsed.streams[0].codec_name;
@@ -1760,14 +1762,14 @@ function ensureEmbeddableVideo(inputPath, originalFilename, tempDir, maxSizeByte
 
     if (isH264 && isYuv420p && isAacOrNone && isUnderLimit) {
         try {
-            execFileSync('ffmpeg', [
+            await execFileAsync('ffmpeg', [
                 '-y',
                 '-threads', '2',
                 '-i', inputPath,
                 '-c', 'copy',
                 '-movflags', '+faststart',
                 outputPath
-            ], { timeout: 30000, stdio: 'ignore' });
+            ], { timeout: 30000 });
             if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
                 tryUnlink(inputPath);
                 return { path: outputPath, name: finalFilename };
@@ -1781,23 +1783,21 @@ function ensureEmbeddableVideo(inputPath, originalFilename, tempDir, maxSizeByte
         '-i', inputPath,
         '-c:v', 'libx264',
         '-pix_fmt', 'yuv420p',
-        '-preset', 'veryfast'
+        '-preset', 'ultrafast'
     ];
     if (!isUnderLimit && durationSec > 0 && durationSec < 600) {
         const targetBits = (maxSizeBytes * 8 * 0.90);
         const totalKbps = Math.floor(targetBits / durationSec / 1000);
         const vKbps = Math.max(200, totalKbps - 128);
         ffmpegArgs.push('-b:v', `${vKbps}k`, '-maxrate', `${Math.floor(vKbps * 1.5)}k`, '-bufsize', `${vKbps * 2}k`);
-        if (vKbps < 700) {
-            ffmpegArgs.push('-vf', "scale='min(1280,iw)':-2");
-        }
+        ffmpegArgs.push('-vf', "scale='min(1280,iw)':-2");
     } else {
-        ffmpegArgs.push('-crf', '23');
+        ffmpegArgs.push('-crf', '26');
     }
     ffmpegArgs.push('-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', outputPath);
 
     try {
-        execFileSync('ffmpeg', ffmpegArgs, { timeout: 120000, stdio: 'ignore' });
+        await execFileAsync('ffmpeg', ffmpegArgs, { timeout: 45000 });
         if (fs.existsSync(outputPath) && fs.statSync(outputPath).size > 0) {
             tryUnlink(inputPath);
             return { path: outputPath, name: finalFilename };
@@ -1851,7 +1851,7 @@ async function downloadFromCDN(urls, isAudio, state, metadata, interaction, temp
             if (!isAudio && (state.type === 'image' || state.type === 'slideshow')) {
                 return await processSlideFile(buffer, tempFilePath, ext, false, state, currentIdx, urls.length, safeTitle, tempDir);
             } else {
-                const opt = ensureEmbeddableVideo(tempFilePath, finalFilename, tempDir);
+                const opt = await ensureEmbeddableVideo(tempFilePath, finalFilename, tempDir);
                 return { path: opt.path, name: opt.name };
             }
         })());
@@ -2006,7 +2006,7 @@ module.exports = {
         };
 
         const replyMsg = await interaction.editReply({ 
-            content: null, 
+            content: '', 
             embeds: [buildEmbed(metadata, state)], 
             components: getComponents(state, metadata.maxQuality, metadata.duration)
         });
@@ -2049,13 +2049,15 @@ module.exports = {
             activeDownloads.add(interaction.user.id);
             collector.stop('started');
 
+            await i.update({ content: 'Downloading... <a:loading:1524146146937667784>', embeds: [], components: [] });
+
             try {
             const isAudio = state.type === 'audio';
             const tempDir = path.join(__dirname, '../Data');
             ensureTempDir(tempDir);
 
             if (metadata.isSpotify) {
-                await i.update({ content: 'Downloading from Spotify... <a:loading:1524146146937667784>', embeds: [], components: [] });
+                await interaction.editReply({ content: 'Downloading from Spotify... <a:loading:1524146146937667784>', embeds: [], components: [] });
                 const spotdlPath = '/home/container/.local/bin/spotdl';
                 const util = require('util');
                 const execFileAsync = util.promisify(execFile);
@@ -2116,7 +2118,6 @@ module.exports = {
             }
 
             if ((isAudio && (metadata.directAudioUrl || metadata.directUrls?.length > 0)) || (!isAudio && metadata.directUrls?.length > 0)) {
-                await i.update({ content: 'Downloading... <a:loading:1524146146937667784>', embeds: [], components: [] });
                 const urls = (isAudio && metadata.directAudioUrl) ? [metadata.directAudioUrl] : metadata.directUrls;
                 await handleBatchDownload(0, urls, null, null, isAudio, state, metadata, interaction, tempDir);
                 return;
@@ -2125,7 +2126,7 @@ module.exports = {
             const payload = buildCobaltPayload(url, state, metadata.maxQuality);
 
             if (estimateFileSize(metadata.durationSeconds, state, url) > 800 * 1024 * 1024) {
-                await i.update({ content: 'Generating direct download link <a:loading:1524146146937667784>', embeds: [], components: [] });
+                await interaction.editReply({ content: 'Generating direct download link <a:loading:1524146146937667784>', embeds: [], components: [] });
                 try {
                     const { data: d } = await requestCobalt(payload);
                     if (d?.status === 'redirect' || d?.status === 'tunnel') {
@@ -2141,8 +2142,6 @@ module.exports = {
                 }
                 return;
             }
-
-            await i.update({ content: 'Downloading... <a:loading:1524146146937667784>', embeds: [], components: [] });
 
             let attempt = 0;
             const maxAttempts = 3;
@@ -2227,6 +2226,10 @@ module.exports = {
                             res.data.pipe(writeStream);
                             writeStream.on('finish', () => {
                                 clearTimeout(stallTimer);
+                                if (estLength > 0 && loaded < estLength * 0.70) {
+                                    reject(new Error(`Incomplete download: received ${(loaded / 1048576).toFixed(1)} MB of ${(estLength / 1048576).toFixed(1)} MB`));
+                                    return;
+                                }
                                 resolve();
                             });
                             writeStream.on('error', err => {
@@ -2248,6 +2251,13 @@ module.exports = {
                             throw new Error('Downloaded file is empty (0 bytes)');
                         }
 
+                        const downloadedSizeMB = (fs.statSync(tempFilePath).size / 1048576).toFixed(1);
+                        await interaction.editReply({
+                            content: `Downloading file... (${downloadedSizeMB} MB / ${downloadedSizeMB} MB)\n\`${'█'.repeat(20)}\` **100%**\n\nProcessing video for Discord... <a:loading:1524146146937667784>`,
+                            embeds: [],
+                            components: []
+                        }).catch(() => null);
+
                         if (state.type === 'image' || state.type === 'slideshow') {
                             const buffer = fs.readFileSync(tempFilePath);
                             const fmt = state.format || 'png';
@@ -2263,7 +2273,7 @@ module.exports = {
                             fs.renameSync(tempFilePath, audioPath);
                             tempFilePath = audioPath;
                         } else {
-                            const opt = ensureEmbeddableVideo(tempFilePath, finalFilename, tempDir);
+                            const opt = await ensureEmbeddableVideo(tempFilePath, finalFilename, tempDir);
                             tempFilePath = opt.path;
                             finalFilename = opt.name;
                         }
@@ -2290,12 +2300,21 @@ module.exports = {
                             components: []
                         }).catch(() => null);
 
-                        await interaction.editReply({
-                            content: `📄 \`${finalFilename}\``,
-                            embeds: [],
-                            files: [new AttachmentBuilder(tempFilePath, { name: finalFilename })],
-                            components: []
-                        }).catch(() => null);
+                        try {
+                            await interaction.editReply({
+                                content: `📄 \`${finalFilename}\``,
+                                embeds: [],
+                                files: [new AttachmentBuilder(tempFilePath, { name: finalFilename })],
+                                components: []
+                            });
+                        } catch (uploadErr) {
+                            await interaction.editReply({
+                                content: `⚠️ **File is too large for Discord to display (${totalSizeMB} MB)**\nPlease download it directly here:`,
+                                embeds: [],
+                                components: [new ActionRowBuilder().addComponents(new ButtonBuilder().setLabel('Download File').setStyle(ButtonStyle.Link).setURL(d.url))],
+                                files: []
+                            });
+                        }
                         if (fs.existsSync(tempFilePath)) tryUnlink(tempFilePath);
                         return;
                     }

@@ -8,10 +8,12 @@ function logYapAction(action) {
     let logs = [];
     try {
         if (fs.existsSync(LogFile)) {
-            logs = JSON.parse(fs.readFileSync(LogFile, 'utf8')) || [];
+            const raw = fs.readFileSync(LogFile, 'utf8').trim();
+            if (raw) {
+                logs = JSON.parse(raw);
+            }
         }
     } catch (e) {
-        console.error("Error reading logs.json:", e);
         logs = [];
     }
     logs.push(action);
