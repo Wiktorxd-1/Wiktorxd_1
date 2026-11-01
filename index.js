@@ -168,6 +168,18 @@ client.on('warn', info => {
     console.warn('A client warning has occurred:', info);
 });
 
+client.on('shardDisconnect', (event, id) => {
+    console.warn(`[Shard ${id}] Disconnected:`, event);
+});
+
+client.on('shardReconnecting', id => {
+    console.log(`[Shard ${id}] Reconnecting...`);
+});
+
+client.on('shardResume', (id, replayedEvents) => {
+    console.log(`[Shard ${id}] Resumed (${replayedEvents} events replayed)`);
+});
+
 client.on('interactionCreate', async interaction => {
     if (interaction.isAutocomplete()) {
         const command = client.commands.get(interaction.commandName);
@@ -182,6 +194,11 @@ client.on('interactionCreate', async interaction => {
     }
 
     if (interaction.isChatInputCommand()) {
+        const age = Date.now() - interaction.createdTimestamp;
+        if (age > 2800) {
+            console.warn(`[Interaction] /${interaction.commandName} arrived expired (${age}ms old), skipping`);
+            return;
+        }
         interaction.receivedAt = Date.now();
         const isOwner = interaction.user.id === process.env.BOT_OWNER_ID;
         if (!isOwner) {
@@ -190,7 +207,7 @@ client.on('interactionCreate', async interaction => {
                 return interaction.reply({
                     content: `⏳ **Slow down!** You can only run up to 3 commands every 10 seconds. Please wait **${rl.retryAfter}s** before trying again.`,
                     flags: 64
-                });
+                }).catch(() => {});
             }
         }
         const command = client.commands.get(interaction.commandName);

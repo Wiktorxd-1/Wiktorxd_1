@@ -371,6 +371,7 @@ module.exports = {
   },
 
   async execute(interaction, client) {
+    await interaction.deferReply().catch(() => {});
     let ping = 0;
     if (client.ws && typeof client.ws.ping === 'number' && isFinite(client.ws.ping) && client.ws.ping >= 0) {
       ping = Math.round(client.ws.ping);
@@ -379,12 +380,16 @@ module.exports = {
     }
     try {
       const embed = await generateStatsEmbed(client, ping);
-      await interaction.reply({ embeds: [embed] });
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply({ embeds: [embed] });
+      } else {
+        await interaction.reply({ embeds: [embed] });
+      }
     } catch (err) {
       console.error('Error executing stats slash command:', err);
       try {
         if (interaction.replied || interaction.deferred) {
-          await interaction.followUp({ content: 'Failed to load stats.', flags: 64 });
+          await interaction.editReply({ content: 'Failed to load stats.' });
         } else {
           await interaction.reply({ content: 'Failed to load stats.', flags: 64 });
         }

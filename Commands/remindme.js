@@ -54,19 +54,14 @@ function filterPings(str) {
 
 
 async function handleRemindCommand(interactionOrMessage, client, timeString, reminderText, attachment) {
-    const isInteraction = typeof interactionOrMessage.deferReply === 'function';
-    if (isInteraction && !(interactionOrMessage.deferred || interactionOrMessage.replied)) {
-        await interactionOrMessage.deferReply({}).catch(() => {});
-    }
-
     const userId = interactionOrMessage.author ? interactionOrMessage.author.id : interactionOrMessage.user.id;
     const timeInMs = parseTime(timeString);
 
     if (!timeInMs) {
         const replyContent = "Provide a valid time up to 6 months.";
-        if (interactionOrMessage.editReply && (interactionOrMessage.deferred || interactionOrMessage.replied)) {
+        if (interactionOrMessage.deferred || interactionOrMessage.replied) {
             return interactionOrMessage.editReply({ content: replyContent, flags: 64 });
-        } else if (interactionOrMessage.reply) {
+        } else if (typeof interactionOrMessage.reply === 'function') {
             return interactionOrMessage.reply({ content: replyContent, flags: 64 });
         } else {
             return interactionOrMessage.channel.send(replyContent);
@@ -96,16 +91,13 @@ async function handleRemindCommand(interactionOrMessage, client, timeString, rem
     const filteredReminder = filterPings(reminderText);
     const confirmationMessage = `Okay, I'll remind you about "${filteredReminder}" in **${formatTimeDifference(timeInMs)}**!`;
 
-    let sentMsg;
-    if (typeof interactionOrMessage.editReply === 'function') {
-        sentMsg = await interactionOrMessage.editReply({ content: confirmationMessage });
+    if (interactionOrMessage.deferred || interactionOrMessage.replied) {
+        return await interactionOrMessage.editReply({ content: confirmationMessage });
     } else if (typeof interactionOrMessage.reply === 'function') {
-        sentMsg = await interactionOrMessage.reply(confirmationMessage);
+        return await interactionOrMessage.reply({ content: confirmationMessage });
     } else if (interactionOrMessage.channel && typeof interactionOrMessage.channel.send === 'function') {
-        sentMsg = await interactionOrMessage.channel.send(confirmationMessage);
+        return await interactionOrMessage.channel.send(confirmationMessage);
     }
-
-
 }
 
 
