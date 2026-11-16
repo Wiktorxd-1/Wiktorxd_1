@@ -132,6 +132,8 @@ async function fetchExchangeRate(from, to) {
 const data = new SlashCommandBuilder()
     .setName('exchange')
     .setDescription('Convert currency exchange rates using Google Finance')
+    .setIntegrationTypes([0, 1])
+    .setContexts([0, 1, 2])
     .addStringOption(option =>
         option.setName('from')
             .setDescription('Currency to convert from (e.g. USD, EUR, BTC)')
