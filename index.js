@@ -1,9 +1,9 @@
+process.env.UV_THREADPOOL_SIZE = '64';
 const { Client, IntentsBitField, ActivityType, Collection, Options } = require('discord.js');
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const dns = require('dns');
-const { Agent } = require('undici');
 const { startUptimeUpdater } = require('./Utility/uptime');
 const startDevMsgWatcher = require('./Utility/dev_msgs.js');
 const startSecretsWatcher = require('./Utility/Hatches/secrets.js');
@@ -16,18 +16,6 @@ const { checkRateLimit } = require('./Utility/rate_limiter.js');
 const Events = require('events');
 
 dns.setDefaultResultOrder('ipv4first');
-
-const restAgent = new Agent({
-    keepAliveTimeout: 60000,
-    keepAliveMaxTimeout: 300000,
-    pipelining: 1,
-    connections: 50,
-    connect: {
-        keepAlive: true,
-        keepAliveInitialDelay: 10000,
-        noDelay: true
-    }
-});
 
 Events.EventEmitter.defaultMaxListeners = 20;
 startTempCleaner();
@@ -65,7 +53,6 @@ const client = new Client({
         large_threshold: 50
     },
     rest: {
-        agent: restAgent,
         offset: 0,
         timeout: 15000
     }
@@ -194,11 +181,6 @@ client.on('interactionCreate', async interaction => {
     }
 
     if (interaction.isChatInputCommand()) {
-        const age = Date.now() - interaction.createdTimestamp;
-        if (age > 2800) {
-            console.warn(`[Interaction] /${interaction.commandName} arrived expired (${age}ms old), skipping`);
-            return;
-        }
         interaction.receivedAt = Date.now();
         const isOwner = interaction.user.id === process.env.BOT_OWNER_ID;
         if (!isOwner) {

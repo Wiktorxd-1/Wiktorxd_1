@@ -57,7 +57,7 @@ async function deployCommands() {
 }
 
 if (require.main === module) {
-    deployCommands();
+    deployCommands().then(() => process.exit(0)).catch(() => process.exit(1));
 }
 
 module.exports = { deployCommands };
