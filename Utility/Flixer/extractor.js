@@ -74,7 +74,7 @@ function ensureBrowserGlobals() {
     wasmInitialized = true;
 }
 
-const DUTCH_CF_IPS = ['104.16.0.1', '104.17.0.1', '104.18.0.1', '104.19.0.1'];
+const DUTCH_CF_IPS = ['104.16.0.1', '104.17.0.1', '104.18.0.1', '104.19.0.1', '104.20.0.1', '104.21.0.1', '104.24.0.1', '172.67.0.1'];
 const API_HOST = 'plsdontscrapemelove.flixer.gd';
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 
@@ -124,7 +124,7 @@ function fetchViaDutchCloudflare(pathName, headers = {}) {
                 },
                 servername: API_HOST
             }, res => {
-                if (res.statusCode === 451) {
+                if (res.statusCode >= 400 && ipIndex < DUTCH_CF_IPS.length) {
                     return tryNextIp();
                 }
                 let data = '';
@@ -274,31 +274,53 @@ async function extractFlixerHls(url) {
         throw new Error('No streaming servers available for this title');
     }
 
-    const nonce2 = generateNonce();
-    const signature2 = generateRequestSignature(wasmKey, timeVal, nonce2, pathname);
+    let timeVal2 = Math.floor(Date.now() / 1000);
+    try {
+        const timeRes2 = await fetchViaDutchCloudflare(`/api/time?t=${Date.now()}`);
+        const timeData2 = JSON.parse(timeRes2.body);
+        if (timeData2.timestamp) timeVal2 = timeData2.timestamp;
+    } catch {}
 
-    const sourceHeaders = {
-        'X-Api-Key': wasmKey,
-        'X-Request-Timestamp': timeVal.toString(),
-        'X-Request-Nonce': nonce2,
-        'X-Request-Signature': signature2,
-        'X-Client-Fingerprint': fingerprint,
-        'x-fingerprint-lite': 'b4f8a1fc72e8O5d63e',
-        'X-Only-Sources': '1',
-        'X-Server': 'sources',
-        'Accept': 'text/plain'
-    };
+    const candidateServers = ['sources', ...availableSources.map(s => s.server).filter(Boolean)];
+    let lastError = null;
+    let streamSource = null;
 
-    const sourceRes = await fetchViaDutchCloudflare(pathname, sourceHeaders);
-    if (sourceRes.status !== 200 || !sourceRes.body) {
-        throw new Error(`Failed to fetch Flixer source stream: status ${sourceRes.status}`);
+    for (const srv of candidateServers) {
+        const nonce2 = generateNonce();
+        const signature2 = generateRequestSignature(wasmKey, timeVal2, nonce2, pathname);
+
+        const sourceHeaders = {
+            'X-Api-Key': wasmKey,
+            'X-Request-Timestamp': timeVal2.toString(),
+            'X-Request-Nonce': nonce2,
+            'X-Request-Signature': signature2,
+            'X-Client-Fingerprint': fingerprint,
+            'x-fingerprint-lite': 'b4f8a1fc72e8O5d63e',
+            'X-Only-Sources': '1',
+            'X-Server': srv,
+            'Accept': 'text/plain'
+        };
+
+        try {
+            const sourceRes = await fetchViaDutchCloudflare(pathname, sourceHeaders);
+            if (sourceRes.status !== 200 || !sourceRes.body) {
+                lastError = new Error(`Failed to fetch Flixer source stream: status ${sourceRes.status}`);
+                continue;
+            }
+            const decryptedSourceRaw = await imgDataModule.process_img_data(sourceRes.body, wasmKey);
+            const sourceData = JSON.parse(decryptedSourceRaw);
+            const found = Array.isArray(sourceData?.sources) ? sourceData.sources.find(s => s.url) : null;
+            if (found && found.url) {
+                streamSource = found;
+                break;
+            }
+        } catch (err) {
+            lastError = err;
+        }
     }
 
-    const decryptedSourceRaw = await imgDataModule.process_img_data(sourceRes.body, wasmKey);
-    const sourceData = JSON.parse(decryptedSourceRaw);
-    const streamSource = Array.isArray(sourceData?.sources) ? sourceData.sources.find(s => s.url) : null;
     if (!streamSource || !streamSource.url) {
-        throw new Error('Could not resolve stream playback URL');
+        throw lastError || new Error('Could not resolve stream playback URL');
     }
 
     const rawPlaylistUrl = streamSource.url;
