@@ -332,10 +332,89 @@ async function writeFlixerPlaylist(url, destM3u8Path) {
     return { streamUrl, server, m3u8Path: destM3u8Path };
 }
 
+async function downloadFlixerMedia(flixerUrl, outputPath, isAudio = false) {
+    const tempM3u8 = `${outputPath}.m3u8`;
+    const { streamUrl } = await writeFlixerPlaylist(flixerUrl, tempM3u8);
+
+    const ffmpegArgs = isAudio ? [
+        '-y',
+        '-threads', '2',
+        '-nostats',
+        '-loglevel', 'error',
+        '-allowed_segment_extensions', 'ALL',
+        '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
+        '-i', tempM3u8,
+        '-vn',
+        '-c:a', 'libmp3lame',
+        '-b:a', '192k',
+        outputPath
+    ] : [
+        '-y',
+        '-threads', '2',
+        '-nostats',
+        '-loglevel', 'error',
+        '-allowed_segment_extensions', 'ALL',
+        '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
+        '-i', tempM3u8,
+        '-c', 'copy',
+        '-movflags', '+faststart',
+        outputPath
+    ];
+
+    try {
+        await new Promise((resolve, reject) => {
+            const { spawn } = require('child_process');
+            const proc = spawn('ffmpeg', ffmpegArgs);
+            let errorText = '';
+            const timeout = setTimeout(() => {
+                proc.kill('SIGKILL');
+                reject(new Error('FFmpeg download timed out'));
+            }, 600000);
+
+            proc.stderr.on('data', chunk => {
+                if (errorText.length < 8192) errorText += chunk.toString();
+            });
+
+            proc.on('error', err => {
+                clearTimeout(timeout);
+                reject(err);
+            });
+
+            proc.on('close', code => {
+                clearTimeout(timeout);
+                if (code === 0) resolve();
+                else reject(new Error(`FFmpeg exited with code ${code}: ${errorText.slice(-500).trim()}`));
+            });
+        });
+    } finally {
+        try { fs.unlinkSync(tempM3u8); } catch {}
+    }
+
+    return { outputPath, streamUrl };
+}
+
+async function uploadToMirror(filePath) {
+    const FormData = require('form-data');
+    const form = new FormData();
+    form.append('file', fs.createReadStream(filePath));
+    const res = await axios.post('https://tmpfiles.org/api/v1/upload', form, {
+        headers: form.getHeaders(),
+        timeout: 180000,
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity
+    });
+    const pageUrl = res?.data?.data?.url;
+    if (!pageUrl) throw new Error('Mirror upload did not return URL');
+    const directUrl = pageUrl.replace('tmpfiles.org/', 'tmpfiles.org/dl/');
+    return { pageUrl, directUrl };
+}
+
 module.exports = {
     isFlixerUrl,
     parseFlixerUrl,
     fetchFlixerMetadata,
     extractFlixerHls,
-    writeFlixerPlaylist
+    writeFlixerPlaylist,
+    downloadFlixerMedia,
+    uploadToMirror
 };

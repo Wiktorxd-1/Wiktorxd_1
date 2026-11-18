@@ -16,7 +16,7 @@ const cheerio = require('cheerio');
 const { execSync, execFileSync, execFile } = require('child_process');
 const util = require('util');
 const execFileAsync = util.promisify(execFile);
-const { isFlixerUrl, fetchFlixerMetadata, writeFlixerPlaylist } = require('../Utility/Flixer/extractor');
+const { isFlixerUrl, fetchFlixerMetadata, downloadFlixerMedia, uploadToMirror } = require('../Utility/Flixer/extractor');
 
 const activeDownloads = new Set();
 
@@ -2069,61 +2069,57 @@ module.exports = {
             }
 
             if (metadata.isFlixer) {
-                await interaction.editReply({ content: 'Extracting streaming playlist... <a:loading:1524146146937667784>', embeds: [], components: [] });
-                const m3u8Path = path.join(tempDir, `flixer_${Date.now()}.m3u8`);
+                await interaction.editReply({ content: 'Downloading media stream... <a:loading:1524146146937667784>', embeds: [], components: [] });
                 const cleanBase = (metadata.title || 'flixer_video').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 50) || 'video';
                 const isAudio = state.type === 'audio';
                 const outputExt = isAudio ? 'mp3' : 'mp4';
                 const outputPath = path.join(tempDir, `flixer_${Date.now()}_${cleanBase}.${outputExt}`);
                 try {
-                    await writeFlixerPlaylist(metadata.flixerUrl, m3u8Path);
-                    await interaction.editReply({ content: 'Processing media for Discord... <a:loading:1524146146937667784>', embeds: [], components: [] });
-                    const ffmpegArgs = isAudio ? [
-                        '-y',
-                        '-threads', '2',
-                        '-allowed_segment_extensions', 'ALL',
-                        '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
-                        '-i', m3u8Path,
-                        '-vn',
-                        '-c:a', 'libmp3lame',
-                        '-b:a', '192k',
-                        outputPath
-                    ] : [
-                        '-y',
-                        '-threads', '2',
-                        '-allowed_segment_extensions', 'ALL',
-                        '-protocol_whitelist', 'file,http,https,tcp,tls,crypto',
-                        '-i', m3u8Path,
-                        '-c', 'copy',
-                        '-movflags', '+faststart',
-                        outputPath
-                    ];
-                    await execFileAsync('ffmpeg', ffmpegArgs, { timeout: 300000 });
-                    tryUnlink(m3u8Path);
+                    const { streamUrl } = await downloadFlixerMedia(metadata.flixerUrl, outputPath, isAudio);
                     if (!fs.existsSync(outputPath) || fs.statSync(outputPath).size === 0) {
-                        throw new Error('Failed to download video stream');
+                        throw new Error('Failed to download media stream');
                     }
                     const fileSize = fs.statSync(outputPath).size;
-                    const maxUploadBytes = 25 * 1024 * 1024;
-                    if (fileSize > maxUploadBytes) {
-                        tryUnlink(outputPath);
+                    const finalFilename = `${cleanBase}.${outputExt}`;
+                    const fileSizeMb = (fileSize / 1048576).toFixed(1);
+
+                    try {
                         await interaction.editReply({
-                            content: `❌ **File is too big (${(fileSize / (1024 * 1024)).toFixed(1)} MB)** to upload directly to Discord (25 MB limit).\nYou can watch it directly at: <${metadata.flixerUrl}>`,
+                            content: `📄 \`${finalFilename}\``,
                             embeds: [],
+                            files: [new AttachmentBuilder(outputPath, { name: finalFilename })],
                             components: []
                         });
+                        tryUnlink(outputPath);
+                        return;
+                    } catch (uploadErr) {
+                        await interaction.editReply({ content: `File is ${fileSizeMb} MB. Uploading to direct download mirror... <a:loading:1524146146937667784>`, embeds: [], components: [] });
+                        try {
+                            const { directUrl } = await uploadToMirror(outputPath);
+                            const row = new ActionRowBuilder().addComponents(
+                                new ButtonBuilder().setLabel('Download Video (Direct Link)').setStyle(ButtonStyle.Link).setURL(directUrl)
+                            );
+                            await interaction.editReply({
+                                content: `⚠️ **File is too large for Discord (${fileSizeMb} MB)**\nYou can download the full file directly using the button below:`,
+                                embeds: [],
+                                components: [row]
+                            });
+                            tryUnlink(outputPath);
+                            return;
+                        } catch (mirrorErr) {}
+
+                        const streamRow = new ActionRowBuilder().addComponents(
+                            new ButtonBuilder().setLabel('Open Direct Stream').setStyle(ButtonStyle.Link).setURL(streamUrl)
+                        );
+                        await interaction.editReply({
+                            content: `⚠️ **File is too large for Discord (${fileSizeMb} MB)**\nYou can stream or download it directly below:`,
+                            embeds: [],
+                            components: [streamRow]
+                        });
+                        tryUnlink(outputPath);
                         return;
                     }
-                    const finalFilename = `${cleanBase}.${outputExt}`;
-                    await interaction.editReply({
-                        content: `📄 \`${finalFilename}\``,
-                        embeds: [],
-                        files: [new AttachmentBuilder(outputPath, { name: finalFilename })],
-                        components: []
-                    }).catch(() => null);
-                    tryUnlink(outputPath);
                 } catch (e) {
-                    tryUnlink(m3u8Path);
                     tryUnlink(outputPath);
                     await interaction.editReply({ content: `❌ Flixer download failed: \`${e.message}\``, components: [], files: [] });
                 }
